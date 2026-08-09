@@ -1,0 +1,17 @@
+# Perturb-seq analysis: run against private screen data, not part of the package.
+analysis/
+results/
+logs/
+
+# Generated from the R package; regenerate with tests/r/generate_fixtures.R
+# (kept in the repo -- see tests/r/README if you would rather not vendor it)
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ipynb_checkpoints/
+*.pt
+*.parquet

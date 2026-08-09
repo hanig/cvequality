@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cvequality"
+version = "0.1.0"
+description = "GPU-accelerated Python port of the cvequality R package: tests for the equality of coefficients of variation across k groups, batched to perturb-seq scale."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Goodarzi lab" }]
+dependencies = [
+    "numpy>=1.23",
+    "torch>=2.0",
+]
+
+[project.optional-dependencies]
+# Everything needed by the perturb-seq adapter and the test suite. Already present
+# in the `workbook` env, so `pip install -e .` normally installs nothing new.
+adapter = ["pandas>=1.5", "pyarrow>=10", "h5py>=3.0", "anndata>=0.9", "scipy>=1.9"]
+test = ["pytest>=7", "pandas>=1.5", "scipy>=1.9", "h5py>=3.0", "anndata>=0.9"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "gpu: requires a CUDA device",
+    "slow: long-running (large nr, many seeds)",
+    "rfixtures: requires tests/r/fixtures.json (generate with tests/r/generate_fixtures.R)",
+]
