@@ -5,19 +5,24 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cvequality"
 version = "0.1.0"
-description = "GPU-accelerated Python port of the cvequality R package: tests for the equality of coefficients of variation across k groups, batched to perturb-seq scale."
+description = "GPU-accelerated Python port of R's cvequality: tests for equality of coefficients of variation across k groups, batched to tens of millions of tests, plus an SD-ratio test for differential variability."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "Goodarzi lab" }]
+keywords = ["statistics", "coefficient-of-variation", "single-cell", "perturb-seq", "gpu", "pytorch"]
+authors = [{ name = "Hani Goodarzi" }]
 dependencies = [
     "numpy>=1.23",
     "torch>=2.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/hanig/cvequality"
+Issues = "https://github.com/hanig/cvequality/issues"
+
 [project.optional-dependencies]
-# Everything needed by the perturb-seq adapter and the test suite. Already present
-# in the `workbook` env, so `pip install -e .` normally installs nothing new.
+# Extras for the single-cell adapter and the test suite; the core statistics need
+# only numpy and torch.
 adapter = ["pandas>=1.5", "pyarrow>=10", "h5py>=3.0", "anndata>=0.9", "scipy>=1.9"]
 test = ["pytest>=7", "pandas>=1.5", "scipy>=1.9", "h5py>=3.0", "anndata>=0.9"]
 

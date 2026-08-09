@@ -1,17 +1,90 @@
-# Perturb-seq analysis: run against private screen data, not part of the package.
+# ---------------------------------------------------------------------------
+# Analysis run against private screen data — not part of the package.
+# ---------------------------------------------------------------------------
 analysis/
 results/
 logs/
 
-# Generated from the R package; regenerate with tests/r/generate_fixtures.R
-# (kept in the repo -- see tests/r/README if you would rather not vendor it)
-
-__pycache__/
-*.py[cod]
-*.egg-info/
-build/
-dist/
-.pytest_cache/
-.ipynb_checkpoints/
+# Cached sufficient statistics and result tables. These are data, sometimes
+# very large, and are always regenerable from the source matrix.
 *.pt
 *.parquet
+*.h5ad
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Testing and type checking
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+.mypy_cache/
+.dmypy.json
+.pyre/
+.ruff_cache/
+
+# ---------------------------------------------------------------------------
+# Notebooks
+# ---------------------------------------------------------------------------
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+
+# ---------------------------------------------------------------------------
+# R (fixture generation)
+# ---------------------------------------------------------------------------
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+
+# ---------------------------------------------------------------------------
+# Editors and OS
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# Cluster job output
+# ---------------------------------------------------------------------------
+slurm-*.out
+*.sbatch.log
