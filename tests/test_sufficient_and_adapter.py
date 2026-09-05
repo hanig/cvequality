@@ -255,6 +255,22 @@ def test_null_ntc_split_is_null_by_construction(toy_adata):
     assert 0.2 < p.mean() < 0.8
 
 
+def test_null_ntc_split_reports_selected_calibration(toy_adata, capsys):
+    cvq.null_ntc_split(
+        toy_adata, group_key="target_gene_name", reference="ntc", n_splits=1,
+        transform="log1p", test="sd_ratio", device="cpu", progress=True,
+    )
+    output = capsys.readouterr().out
+    assert "sd_ratio" in output
+    assert "inflation at 0.05" in output
+
+    cvq.null_ntc_split(
+        toy_adata, group_key="target_gene_name", reference="ntc", n_splits=1,
+        transform="log1p", test="asymptotic", device="cpu", progress=True,
+    )
+    assert "sd_ratio" not in capsys.readouterr().out
+
+
 def test_bh_fdr_matches_statsmodels(toy_adata):
     multipletests = pytest.importorskip("statsmodels.stats.multitest").multipletests
     from cvequality.adapter import _bh_fdr

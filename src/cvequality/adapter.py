@@ -615,7 +615,7 @@ def null_ntc_split(
 def _report_calibration(df, *, transform: str, test: str) -> None:
     """Print the p-value distribution and inflation for a null run."""
     print(f"\n=== null calibration (transform={transform}, {len(df):,} null tests) ===")
-    for name in ("asymptotic", "mslrt"):
+    for name in ("asymptotic", "mslrt", "sd_ratio"):
         col = f"pval_{name}"
         if col not in df:
             continue
