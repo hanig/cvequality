@@ -334,9 +334,10 @@ def mslr_test2_batch(
     se0 = sh0 / torch.sqrt(n_c)
 
     if share_draws:
-        spread = (n_c - n_c[:1]).abs().max()
+        spread = (n_t - n_t[:1]).abs().max()
         if bool(spread > 0):
             raise ValueError("share_draws=True requires every test in the batch to share the same n")
+        shared_df = (n_t[:1] - 1.0).unsqueeze(1)
 
     null_mean = torch.empty(T, device=device, dtype=dtype)
     null_sd = torch.empty(T, device=device, dtype=dtype)
@@ -352,7 +353,7 @@ def mslr_test2_batch(
         gen = make_generator(None if seed is None else seed * 1_000_003 + start, device)
         if share_draws:
             z = standard_normal((1, nr, k), device=device, dtype=dtype, generator=gen).expand(c, nr, k)
-            ch = chi2_rvs(dfc[:1], (1, nr, k), generator=gen).expand(c, nr, k)
+            ch = chi2_rvs(shared_df, (1, nr, k), generator=gen).expand(c, nr, k)
         else:
             z = standard_normal((c, nr, k), device=device, dtype=dtype, generator=gen)
             ch = chi2_rvs(dfc, (c, nr, k), generator=gen)

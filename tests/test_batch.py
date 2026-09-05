@@ -94,6 +94,42 @@ def test_share_draws_rejects_heterogeneous_n(grid):
         cvq.mslr_test2_batch(n=n, x=x, s=s, nr=32, device="cpu", share_draws=True)
 
 
+def test_share_draws_handles_degenerate_row():
+    n = np.tile(np.array([500.0, 700.0]), (3, 1))
+    x = np.array([[0.0, 2.0], [1.5, 2.1], [3.2, 2.7]])
+    s = np.array([[1.0, 1.0], [1.8, 2.7], [4.5, 3.1]])
+    result = cvq.mslr_test2_batch(
+        n=n, x=x, s=s, nr=32, seed=4, device="cpu", share_draws=True,
+    )
+
+    assert int(result.status[0]) == int(Status.NONPOSITIVE_MEAN)
+    assert bool(torch.isfinite(result.MSLRT[1:]).all())
+
+
+def test_shared_draws_do_not_depend_on_degenerate_first_row():
+    n = np.tile(np.array([500.0, 700.0]), (3, 1))
+    x = np.array([[0.0, 2.0], [1.5, 2.1], [3.2, 2.7]])
+    s = np.array([[1.0, 1.0], [1.8, 2.7], [4.5, 3.1]])
+    kwargs = dict(nr=64, seed=4, device="cpu", chunk=3, share_draws=True)
+
+    with_degenerate = cvq.mslr_test2_batch(n=n, x=x, s=s, **kwargs)
+    clean = cvq.mslr_test2_batch(n=n[1:], x=x[1:], s=s[1:], **kwargs)
+
+    torch.testing.assert_close(with_degenerate.null_mean[1:], clean.null_mean, rtol=0, atol=0)
+    torch.testing.assert_close(with_degenerate.null_sd[1:], clean.null_sd, rtol=0, atol=0)
+
+
+def test_vs_reference_mslrt_share_draws_handles_all_zero_gene(toy_adata):
+    result = cvq.vs_reference(
+        toy_adata, group_key="target_gene_name", reference="ntc", test="mslrt", nr=16,
+        min_cells=30, device="cpu", share_draws=True, progress=False,
+    )
+
+    zero = result[result["gene"] == "g0"]
+    assert len(zero) == 3
+    assert (zero["status"] == int(Status.NONPOSITIVE_MEAN)).all()
+
+
 @pytest.mark.parametrize(
     "n,x,s,expect",
     [
