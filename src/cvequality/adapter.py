@@ -234,6 +234,9 @@ def vs_reference(
         requested test ``stat_*``, ``pval_*``, ``fdr_*``, plus ``pi_score``, ``status``, and
         the provenance pair ``cv_transform`` / ``target_sum``. ``fdr_*`` is BH within each
         perturbation, matching how per-perturbation DE tables are usually thresholded.
+        ``pi_score`` combines the primary test's p-value with its effect size: the absolute
+        ``log2_sd_ratio`` for SD-ratio, or the absolute ``log2_cv_ratio`` for MSLRT and the
+        asymptotic test.
 
         The provenance columns are not decoration: under ``log1p`` the CV depends on
         ``target_sum``, so a table without both is not interpretable on its own. The column is
@@ -360,7 +363,8 @@ def vs_reference(
         for name in ("asymptotic", "mslrt", "sd_ratio"):
             if f"pval_{name}" in df:
                 df[f"fdr_{name}"] = _bh_fdr(df[f"pval_{name}"].to_numpy())
-        df["pi_score"] = -np.log10(np.clip(df[primary], _PFLOOR, 1.0)) * df["log2_cv_ratio"].abs()
+        effect = "log2_sd_ratio" if primary == "pval_sd_ratio" else "log2_cv_ratio"
+        df["pi_score"] = -np.log10(np.clip(df[primary], _PFLOOR, 1.0)) * df[effect].abs()
         frames.append(df)
 
         if progress and (i % 25 == 0 or i == len(keep) - 1):
