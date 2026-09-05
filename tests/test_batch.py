@@ -119,6 +119,26 @@ def test_shared_draws_do_not_depend_on_degenerate_first_row():
     torch.testing.assert_close(with_degenerate.null_sd[1:], clean.null_sd, rtol=0, atol=0)
 
 
+def test_bootstrap_draws_do_not_depend_on_interleaved_degenerate_rows(grid):
+    """Compaction keeps each OK row's RNG position independent of invalid neighbours."""
+    n, x, s = (a[:6].copy() for a in grid)
+    clean = cvq.mslr_test2_batch(
+        n=n, x=x, s=s, nr=64, seed=4, device="cpu", chunk=2,
+    )
+
+    insert_at = [1, 4]
+    n_mixed = np.insert(n, insert_at, [[500.0, 700.0], [500.0, 700.0]], axis=0)
+    x_mixed = np.insert(x, insert_at, [[0.0, 2.0], [2.0, 3.0]], axis=0)
+    s_mixed = np.insert(s, insert_at, [[1.0, 1.0], [0.0, 1.0]], axis=0)
+    mixed = cvq.mslr_test2_batch(
+        n=n_mixed, x=x_mixed, s=s_mixed, nr=64, seed=4, device="cpu", chunk=2,
+    )
+
+    ok = mixed.status == int(Status.OK)
+    torch.testing.assert_close(mixed.MSLRT[ok], clean.MSLRT, rtol=0, atol=0)
+    assert bool((mixed.n_valid[~ok] == 0).all())
+
+
 def test_vs_reference_mslrt_share_draws_handles_all_zero_gene(toy_adata):
     result = cvq.vs_reference(
         toy_adata, group_key="target_gene_name", reference="ntc", test="mslrt", nr=16,
@@ -147,6 +167,7 @@ def test_degenerate_rows_get_status_and_nan(n, x, s, expect):
     m = cvq.mslr_test2_batch(n=n, x=x, s=s, nr=16, device="cpu")
     assert int(m.status) == int(expect)
     assert np.isnan(float(m.MSLRT))
+    assert int(m.n_valid) == 0
 
 
 def test_degenerate_rows_do_not_poison_neighbours(grid):
