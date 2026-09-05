@@ -159,6 +159,7 @@ def vs_reference(
     target_sum: float = 1e4,
     layer: Optional[str] = None,
     test: str = "both",
+    kurtosis_shrinkage: str = "pooled",
     nr: int = 1000,
     seed: Optional[int] = 0,
     solver: str = "newton",
@@ -206,6 +207,9 @@ def vs_reference(
     test : {"both", "asymptotic", "mslrt"}
         ``asymptotic`` is closed-form and effectively free; ``mslrt`` costs ``nr`` MLE solves
         per test and dominates the runtime.
+    kurtosis_shrinkage : {"pooled", "none"}
+        How the SD-ratio test stabilizes its kurtosis estimates. The default pools them in
+        proportion to group size; ``"none"`` preserves raw plug-in weighting.
     nr, seed, solver, chunk, share_draws
         Passed to :func:`cvequality.mslrt.mslr_test2_batch`.
     min_cells : int
@@ -331,10 +335,14 @@ def vs_reference(
         status = None
         if "sd_ratio" in tests:
             k4 = torch.stack([st.kurtosis[ref_i][idx], st.kurtosis[g][idx]], dim=-1)
-            sr = sd_ratio_test_batch(n=n_tk, sd=s_tk, kurtosis=k4, device=device, dtype=dtype)
+            sr = sd_ratio_test_batch(
+                n=n_tk, sd=s_tk, kurtosis=k4,
+                kurtosis_shrinkage=kurtosis_shrinkage, device=device, dtype=dtype,
+            )
             cols["log2_sd_ratio"] = sr.log2_sd_ratio.cpu().numpy()
             cols["kurtosis_ref"] = k4[:, 0].cpu().numpy()
             cols["kurtosis_grp"] = k4[:, 1].cpu().numpy()
+            cols["kurtosis_shrinkage"] = kurtosis_shrinkage
             cols["stat_sd_ratio"] = sr.stat.cpu().numpy()
             cols["pval_sd_ratio"] = sr.p_value.cpu().numpy()
             status = sr.status.cpu().numpy()
@@ -401,6 +409,7 @@ def omnibus(
     target_sum: float = 1e4,
     layer: Optional[str] = None,
     test: str = "asymptotic",
+    kurtosis_shrinkage: str = "pooled",
     nr: int = 1000,
     seed: Optional[int] = 0,
     solver: str = "newton",
@@ -430,6 +439,9 @@ def omnibus(
     test : {"asymptotic", "mslrt", "both"}
         Defaults to ``asymptotic`` here, since it is the natural screening statistic at this
         scale.
+    kurtosis_shrinkage : {"pooled", "none"}
+        How the SD-ratio test stabilizes its kurtosis estimates. The default pools them in
+        proportion to group size; ``"none"`` preserves raw plug-in weighting.
 
     Returns
     -------
@@ -478,9 +490,13 @@ def omnibus(
     status = None
     if "sd_ratio" in tests:
         k4 = st.kurtosis[gi].T.contiguous()[idx]
-        sr = sd_ratio_test_batch(n=n_tk, sd=s_tk, kurtosis=k4, device=device, dtype=dtype)
+        sr = sd_ratio_test_batch(
+            n=n_tk, sd=s_tk, kurtosis=k4,
+            kurtosis_shrinkage=kurtosis_shrinkage, device=device, dtype=dtype,
+        )
         cols["stat_sd_ratio"] = sr.stat.cpu().numpy()
         cols["pval_sd_ratio"] = sr.p_value.cpu().numpy()
+        cols["kurtosis_shrinkage"] = kurtosis_shrinkage
         status = sr.status.cpu().numpy()
     if "asymptotic" in tests:
         a = asymptotic_test2_batch(n=n_tk, s=s_tk, x=x_tk, device=device, dtype=dtype)

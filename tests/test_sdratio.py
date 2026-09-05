@@ -38,6 +38,18 @@ def test_higher_kurtosis_widens_the_null():
     assert p_heavy > p_norm
 
 
+def test_pooled_kurtosis_is_weighted_by_group_size():
+    n = np.array([[1000.0, 100.0]])
+    sd = np.array([[1.0, 1.2]])
+    kurtosis = np.array([[3.0, 9.0]])
+    pooled = np.full_like(kurtosis, (1000 * 3.0 + 100 * 9.0) / 1100)
+    got = cvq.sd_ratio_test_batch(n=n, sd=sd, kurtosis=kurtosis, device="cpu")
+    expected = cvq.sd_ratio_test_batch(
+        n=n, sd=sd, kurtosis=pooled, kurtosis_shrinkage="none", device="cpu"
+    )
+    torch.testing.assert_close(got.stat, expected.stat)
+
+
 def test_equal_sds_give_a_uniformly_distributed_statistic():
     """Simulated normal data: the k=2 test must be calibrated when H0 holds."""
     rng = np.random.default_rng(0)
@@ -49,6 +61,34 @@ def test_equal_sds_give_a_uniformly_distributed_statistic():
     p = cvq.sd_ratio_test_batch(n=ns, sd=sd, device="cpu").p_value.numpy()
     assert 0.7 < (p < 0.05).mean() / 0.05 < 1.3, (p < 0.05).mean() / 0.05
     assert 0.4 < p.mean() < 0.6
+
+
+def test_kurtosis_shrinkage_calibrates_a_small_group_against_a_large_reference():
+    """Pooling removes the small group's noisy fourth moment from its null variance."""
+    rng = np.random.default_rng(123)
+    T, n_ref, n_grp = 20_000, 200_000, 100
+    sd_ref = np.sqrt(rng.chisquare(n_ref - 1, T) / (n_ref - 1))
+    group = rng.normal(size=(T, n_grp))
+    sd_grp = group.std(axis=1, ddof=1)
+    group -= group.mean(axis=1, keepdims=True)
+    m2 = (group**2).mean(axis=1)
+    kurtosis_grp = (group**4).mean(axis=1) / m2**2
+
+    n = np.column_stack([np.full(T, n_ref), np.full(T, n_grp)])
+    sd = np.column_stack([sd_ref, sd_grp])
+    kurtosis = np.column_stack([np.full(T, 3.0), kurtosis_grp])
+    default = cvq.sd_ratio_test_batch(
+        n=n, sd=sd, kurtosis=kurtosis, device="cpu"
+    ).p_value.numpy()
+    raw = cvq.sd_ratio_test_batch(
+        n=n, sd=sd, kurtosis=kurtosis, kurtosis_shrinkage="none", device="cpu"
+    ).p_value.numpy()
+
+    default_inflation = np.array([(default < a).mean() / a for a in (0.05, 0.01)])
+    raw_inflation = np.array([(raw < a).mean() / a for a in (0.05, 0.01)])
+    assert (default_inflation <= [1.15, 1.30]).all(), default_inflation
+    assert raw_inflation[0] == pytest.approx(1.30, abs=0.08)
+    assert raw_inflation[1] == pytest.approx(1.67, abs=0.15)
 
 
 def test_degenerate_rows_flagged():
@@ -159,10 +199,11 @@ def test_sd_ratio_separates_dispersion_from_de_better_than_the_cv(called, screen
 
 
 def test_kurtosis_columns_are_reported(called):
-    for col in ("kurtosis_ref", "kurtosis_grp", "log2_sd_ratio", "stat_sd_ratio",
-                "pval_sd_ratio", "fdr_sd_ratio"):
+    for col in ("kurtosis_ref", "kurtosis_grp", "kurtosis_shrinkage", "log2_sd_ratio",
+                "stat_sd_ratio", "pval_sd_ratio", "fdr_sd_ratio"):
         assert col in called.columns
     assert (called["kurtosis_ref"] >= 1.0).all()
+    assert (called["kurtosis_shrinkage"] == "pooled").all()
 
 
 def test_requires_moments(screen_stats):

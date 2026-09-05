@@ -25,7 +25,10 @@ which for k=2 is the square of the usual two-sample log-SD z.
 
 **The kurtosis correction is what makes this usable**, and it is only available because the
 calibrated transform is ``log1p``. Assuming normality (``kurt = 3``) leaves the test
-noticeably anti-conservative; substituting the sample kurtosis brings it close to nominal.
+noticeably anti-conservative, but the raw sample kurtosis also makes its inverse-variance
+weight noisy at small group sizes. In Gaussian simulations with a 200,000-cell reference and
+a 100-cell group, raw plug-in kurtosis inflates the 0.05 and 0.01 tails by 1.30x and 1.67x;
+pooling kurtosis across groups in proportion to sample size reduces this to 1.07x and 1.18x.
 Under ``tp10k`` the same correction is impossible -- its kurtosis estimate is barely
 reproducible between random halves of the same cells, whereas under ``log1p`` it is stable.
 
@@ -67,6 +70,7 @@ def sd_ratio_test_batch(
     n,
     sd,
     kurtosis=None,
+    kurtosis_shrinkage: str = "pooled",
     device: Union[None, str, torch.device] = None,
     dtype: Optional[torch.dtype] = None,
 ) -> SdRatioResult:
@@ -80,7 +84,16 @@ def sd_ratio_test_batch(
         Per-group kurtosis of the values (non-excess). Default 3.0, i.e. normal theory, which
         is measurably anti-conservative on real data -- pass
         :attr:`cvequality.sufficient.GroupStats.kurtosis` instead.
+    kurtosis_shrinkage : {"pooled", "none"}
+        ``"pooled"`` (default) replaces the noisy per-group estimates used in the weights
+        with their sample-size-weighted mean within each test. ``"none"`` uses the raw
+        per-group kurtosis estimates.
     """
+    if kurtosis_shrinkage not in {"pooled", "none"}:
+        raise ValueError(
+            "kurtosis_shrinkage must be 'pooled' or 'none', got "
+            f"{kurtosis_shrinkage!r}"
+        )
     device = resolve_device(device)
     dtype = resolve_dtype(dtype)
     if kurtosis is None:
@@ -101,6 +114,8 @@ def sd_ratio_test_batch(
     # Kurtosis is >= 1 for any distribution; clamp just above so the variance stays positive.
     k4_c = torch.where(safe & torch.isfinite(k4), k4, torch.full_like(k4, NORMAL_KURTOSIS))
     k4_c = k4_c.clamp_min(1.0 + 1e-6)
+    if kurtosis_shrinkage == "pooled":
+        k4_c = (n_c * k4_c).sum(dim=-1, keepdim=True) / n_c.sum(dim=-1, keepdim=True)
 
     l = torch.log(sd_c)
     var = (k4_c - 1.0) / (4.0 * n_c)
