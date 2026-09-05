@@ -1,9 +1,11 @@
 """Command-line entry point, so a sharded SLURM job needs no bespoke Python.
 
-    python -m cvequality vs-reference --source screen.h5ad --out shard0.parquet --shard 0/3
-    python -m cvequality omnibus      --source screen.h5ad --out omnibus.parquet
-    python -m cvequality null         --source screen.h5ad --out null.parquet --match-size 722
-    python -m cvequality stats        --source screen.h5ad --out stats.pt
+    python -m cvequality stats        --source screen.h5ad --out tp10k.pt --transform tp10k
+    python -m cvequality vs-reference --source screen.h5ad --out shard0.parquet \\
+        --test all --mean-stats tp10k.pt --shard 0/3
+    python -m cvequality omnibus      --source screen.h5ad --out omnibus.parquet --test sd_ratio
+    python -m cvequality null         --source screen.h5ad --out null.parquet \\
+        --test sd_ratio --match-size 722
 
 ``stats`` writes the sufficient statistics so later runs (other transforms aside) skip the
 full matrix pass entirely.
@@ -38,7 +40,10 @@ def _common(p: argparse.ArgumentParser) -> None:
 
 
 def _test_args(p: argparse.ArgumentParser, default_test: str) -> None:
-    p.add_argument("--test", default=default_test, choices=["both", "asymptotic", "mslrt"])
+    p.add_argument(
+        "--test", default=default_test,
+        choices=["both", "asymptotic", "mslrt", "sd_ratio", "all"],
+    )
     p.add_argument("--nr", type=int, default=1000, help="bootstrap replicates for MSLRT")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--solver", default="newton", choices=["newton", "fixedpoint"])
@@ -60,6 +65,8 @@ def main(argv=None) -> int:
     p.add_argument("--max-targets", type=int, default=None)
     p.add_argument("--share-draws", action="store_true",
                    help="reuse bootstrap draws across genes within a group (common random numbers)")
+    p.add_argument("--mean-stats", default=None,
+                   help="ratio-scale sufficient statistics for log2_mean_ratio")
 
     p = sub.add_parser("omnibus", help="one test per gene across all groups")
     _common(p)
@@ -111,9 +118,10 @@ def main(argv=None) -> int:
         source = None
 
     if a.cmd == "vs-reference":
+        mean_stats = GroupStats.load(a.mean_stats, device=a.device) if a.mean_stats else None
         df = cvq.vs_reference(
             source, reference=a.reference, shard=a.shard, max_targets=a.max_targets,
-            chunk=a.chunk, share_draws=a.share_draws, out=a.out, **shared,
+            chunk=a.chunk, share_draws=a.share_draws, mean_stats=mean_stats, out=a.out, **shared,
         )
     elif a.cmd == "omnibus":
         df = cvq.omnibus(source, exclude=tuple(a.exclude), chunk=a.chunk, out=a.out, **shared)
