@@ -244,7 +244,7 @@ def _open_matrix(source, layer: Optional[str] = None):
                 "Load it with anndata and pass the AnnData instead."
             )
         shape = tuple(int(v) for v in grp.attrs["shape"])
-        var_names = _decode(f["var"][f["var"].attrs["_index"]][:])
+        var_names = _read_h5ad_array(f["var"][f["var"].attrs["_index"]])
         return f, ("h5ad", grp), shape, var_names, f
     try:
         import anndata  # noqa: F401
@@ -259,6 +259,22 @@ def _open_matrix(source, layer: Optional[str] = None):
 
 def _decode(arr) -> np.ndarray:
     return np.array([v.decode() if isinstance(v, bytes) else v for v in arr], dtype=object)
+
+
+def _read_h5ad_array(node) -> np.ndarray:
+    """Read a plain or pandas-nullable array from an h5ad node."""
+    if node.attrs.get("encoding-type", "") == "nullable-string-array":
+        values = _decode(node["values"][:])
+        missing = np.asarray(node["mask"][:], dtype=bool)
+        if missing.any():
+            values[missing] = np.nan
+        return values
+    if not hasattr(node, "shape"):
+        raise NotImplementedError(
+            f"unsupported h5ad array encoding {node.attrs.get('encoding-type', '')!r}"
+        )
+    values = node[:]
+    return _decode(values) if values.dtype.kind in "SO" else values
 
 
 #: Below this selected fraction, an h5ad is read row-by-row for just the wanted cells rather
@@ -558,7 +574,7 @@ def _read_obs_column(obs_src, key: str) -> np.ndarray:
         raise KeyError(f"obs column {key!r} not found; available: {cols}")
     node = obs[key]
     if hasattr(node, "keys") and "categories" in node:
-        cats = _decode(node["categories"][:])
+        cats = _read_h5ad_array(node["categories"])
         codes = node["codes"][:]
         missing = codes == -1
         if not missing.any():
@@ -567,8 +583,7 @@ def _read_obs_column(obs_src, key: str) -> np.ndarray:
         vals[missing] = np.nan
         vals[~missing] = cats[codes[~missing]]
         return vals
-    vals = node[:]
-    return _decode(vals) if vals.dtype.kind in "SO" else vals
+    return _read_h5ad_array(node)
 
 
 def _missing_label_mask(labels: np.ndarray) -> np.ndarray:
