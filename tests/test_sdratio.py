@@ -59,6 +59,26 @@ def test_degenerate_rows_flagged():
     assert int(r.status) == int(Status.TOO_FEW_OBS)
 
 
+def test_pi_score_uses_the_primary_tests_effect(toy_adata):
+    common = dict(
+        group_key="target_gene_name", reference="ntc", min_cells=30,
+        device="cpu", progress=False,
+    )
+    sd_ratio = cvq.vs_reference(toy_adata, test="sd_ratio", **common)
+    asymptotic = cvq.vs_reference(toy_adata, test="asymptotic", **common)
+
+    sd_expected = (
+        -np.log10(np.clip(sd_ratio["pval_sd_ratio"], 1e-300, 1.0))
+        * sd_ratio["log2_sd_ratio"].abs()
+    )
+    cv_expected = (
+        -np.log10(np.clip(asymptotic["pval_asymptotic"], 1e-300, 1.0))
+        * asymptotic["log2_cv_ratio"].abs()
+    )
+    np.testing.assert_allclose(sd_ratio["pi_score"], sd_expected)
+    np.testing.assert_allclose(asymptotic["pi_score"], cv_expected)
+
+
 # ---------------------------------------------------------------------------
 # integration: the identity that motivates the test, and what it buys
 # ---------------------------------------------------------------------------
