@@ -195,10 +195,17 @@ ratio**. Testing it directly needs no post-hoc correction and no threshold to tu
 statistic is an inverse-variance Wald on `log(sd)` using `Var(log s) ≈ (γ₄−1)/(4n)`, which
 generalizes to any *k* and reduces to the two-sample log-SD z at k=2.
 
-The kurtosis correction is what makes it usable — assuming normality leaves it
-anti-conservative — and it is only available under `log1p`, where the kurtosis is stably
-estimable. On simulated screens with known ground truth it separates genuine dispersion changes
-from pure mean changes substantially better than the CV tests, at a comparable hit count.
+The kurtosis correction is what makes it usable, but raw sample kurtosis makes the weights noisy
+at small group sizes. With Gaussian data, a 200,000-cell reference, and a 100-cell group, the raw
+plug-in estimator inflates the 0.05 and 0.01 tails by 1.29x and 1.71x; the default partial
+shrinkage reduces this to 1.06x and 1.19x. For each group it blends the raw estimate with the
+n-weighted kurtosis across that test, giving the group and pooled estimate effective sample sizes
+`n_g` and `kurtosis_prior_n=1000`, respectively. A 3,000-cell group therefore keeps 75% of its
+own estimate, while a 100-cell group is 91% pooled. It is only available under `log1p`, where
+kurtosis is stably estimable. On simulated screens with known ground truth the test separates
+genuine dispersion changes from pure mean changes substantially better than the CV tests, at a
+comparable hit count. Pass `kurtosis_shrinkage="none"` or `kurtosis_prior_n=0` to select the raw
+behavior.
 
 It needs `moments=True` statistics, which is the default:
 
@@ -207,7 +214,7 @@ df = cvq.vs_reference("screen.h5ad", test="sd_ratio")   # or test="all" for all 
 ```
 
 adding `log2_sd_ratio`, `stat_sd_ratio`, `pval_sd_ratio`, `fdr_sd_ratio`, `kurtosis_ref`,
-`kurtosis_grp`.
+`kurtosis_grp`, `kurtosis_shrinkage`, and `kurtosis_prior_n`.
 
 ---
 

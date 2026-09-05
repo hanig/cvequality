@@ -38,6 +38,46 @@ def test_higher_kurtosis_widens_the_null():
     assert p_heavy > p_norm
 
 
+def test_partial_kurtosis_shrinkage_preserves_large_group_information():
+    n = np.array([[200_000.0, 3_000.0]])
+    sd = np.array([[1.0, 1.2]])
+    kurtosis = np.array([[3.0, 6.0]])
+    got = cvq.sd_ratio_test_batch(n=n, sd=sd, kurtosis=kurtosis, device="cpu")
+
+    pooled = (200_000 * 3.0 + 3_000 * 6.0) / 203_000
+    expected = (3_000 * 6.0 + 1_000 * pooled) / 4_000
+    assert expected == pytest.approx(5.261083743842364, rel=1e-15)
+    assert float(got.kurtosis_shrunk[0, 1]) == pytest.approx(expected, abs=0.05)
+    # Also pin the review's intuitive approximation, 0.75 * 6 + 0.25 * 3.003.
+    assert abs(float(got.kurtosis_shrunk[0, 1]) - (0.75 * 6 + 0.25 * 3.003)) < 0.05
+
+
+def test_zero_kurtosis_prior_is_exactly_the_raw_statistic():
+    kwargs = dict(
+        n=np.array([[200_000.0, 3_000.0], [700.0, 120.0]]),
+        sd=np.array([[1.0, 1.2], [0.8, 1.1]]),
+        kurtosis=np.array([[3.0, 6.0], [4.0, 9.0]]),
+        device="cpu",
+    )
+    zero_prior = cvq.sd_ratio_test_batch(**kwargs, kurtosis_prior_n=0)
+    raw = cvq.sd_ratio_test_batch(**kwargs, kurtosis_shrinkage="none")
+    assert torch.equal(zero_prior.stat, raw.stat)
+
+
+def test_very_large_kurtosis_prior_reproduces_full_pooling():
+    n = np.array([[1000.0, 100.0]])
+    sd = np.array([[1.0, 1.2]])
+    kurtosis = np.array([[3.0, 9.0]])
+    pooled = np.full_like(kurtosis, (1000 * 3.0 + 100 * 9.0) / 1100)
+    got = cvq.sd_ratio_test_batch(
+        n=n, sd=sd, kurtosis=kurtosis, kurtosis_prior_n=1e12, device="cpu"
+    )
+    full_pool = cvq.sd_ratio_test_batch(
+        n=n, sd=sd, kurtosis=pooled, kurtosis_shrinkage="none", device="cpu"
+    )
+    torch.testing.assert_close(got.stat, full_pool.stat, rtol=1e-8, atol=0)
+
+
 def test_equal_sds_give_a_uniformly_distributed_statistic():
     """Simulated normal data: the k=2 test must be calibrated when H0 holds."""
     rng = np.random.default_rng(0)
@@ -49,6 +89,34 @@ def test_equal_sds_give_a_uniformly_distributed_statistic():
     p = cvq.sd_ratio_test_batch(n=ns, sd=sd, device="cpu").p_value.numpy()
     assert 0.7 < (p < 0.05).mean() / 0.05 < 1.3, (p < 0.05).mean() / 0.05
     assert 0.4 < p.mean() < 0.6
+
+
+def test_kurtosis_shrinkage_calibrates_a_small_group_against_a_large_reference():
+    """Partial shrinkage stabilizes the small group's noisy fourth moment."""
+    rng = np.random.default_rng(123)
+    T, n_ref, n_grp = 20_000, 200_000, 100
+    sd_ref = np.sqrt(rng.chisquare(n_ref - 1, T) / (n_ref - 1))
+    group = rng.normal(size=(T, n_grp))
+    sd_grp = group.std(axis=1, ddof=1)
+    group -= group.mean(axis=1, keepdims=True)
+    m2 = (group**2).mean(axis=1)
+    kurtosis_grp = (group**4).mean(axis=1) / m2**2
+
+    n = np.column_stack([np.full(T, n_ref), np.full(T, n_grp)])
+    sd = np.column_stack([sd_ref, sd_grp])
+    kurtosis = np.column_stack([np.full(T, 3.0), kurtosis_grp])
+    default = cvq.sd_ratio_test_batch(
+        n=n, sd=sd, kurtosis=kurtosis, device="cpu"
+    ).p_value.numpy()
+    raw = cvq.sd_ratio_test_batch(
+        n=n, sd=sd, kurtosis=kurtosis, kurtosis_shrinkage="none", device="cpu"
+    ).p_value.numpy()
+
+    default_inflation = np.array([(default < a).mean() / a for a in (0.05, 0.01)])
+    raw_inflation = np.array([(raw < a).mean() / a for a in (0.05, 0.01)])
+    assert (default_inflation <= [1.15, 1.30]).all(), default_inflation
+    assert raw_inflation[0] == pytest.approx(1.30, abs=0.08)
+    assert raw_inflation[1] == pytest.approx(1.67, abs=0.15)
 
 
 def test_degenerate_rows_flagged():
@@ -159,10 +227,13 @@ def test_sd_ratio_separates_dispersion_from_de_better_than_the_cv(called, screen
 
 
 def test_kurtosis_columns_are_reported(called):
-    for col in ("kurtosis_ref", "kurtosis_grp", "log2_sd_ratio", "stat_sd_ratio",
-                "pval_sd_ratio", "fdr_sd_ratio"):
+    for col in ("kurtosis_ref", "kurtosis_grp", "kurtosis_shrinkage",
+                "kurtosis_prior_n", "log2_sd_ratio", "stat_sd_ratio", "pval_sd_ratio",
+                "fdr_sd_ratio"):
         assert col in called.columns
     assert (called["kurtosis_ref"] >= 1.0).all()
+    assert (called["kurtosis_shrinkage"] == "pooled").all()
+    assert (called["kurtosis_prior_n"] == 1000.0).all()
 
 
 def test_requires_moments(screen_stats):
