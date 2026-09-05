@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import time
+import warnings
 from dataclasses import dataclass
 from typing import Callable, Iterator, Optional, Sequence, Tuple, Union
 
@@ -425,9 +426,18 @@ def group_sufficient_stats(
         if groups.shape[0] != n_cells:
             raise ValueError(f"groups has {groups.shape[0]} entries but the matrix has {n_cells} cells")
 
-        group_names, codes = np.unique(groups, return_inverse=True)
-        codes = codes.astype(np.int64)
+        missing_labels = _missing_label_mask(groups)
+        n_missing = int(missing_labels.sum())
+        if n_missing:
+            warnings.warn(
+                f"Dropped {n_missing} cell{'s' if n_missing != 1 else ''} with missing group labels.",
+                UserWarning,
+                stacklevel=2,
+            )
+        group_names, valid_codes = np.unique(groups[~missing_labels], return_inverse=True)
         G = len(group_names)
+        codes = np.full(n_cells, G, dtype=np.int64)
+        codes[~missing_labels] = valid_codes
         if cell_mask is not None:
             cell_mask = np.asarray(cell_mask, dtype=bool)
             if cell_mask.shape[0] != n_cells:
@@ -549,6 +559,34 @@ def _read_obs_column(obs_src, key: str) -> np.ndarray:
     node = obs[key]
     if hasattr(node, "keys") and "categories" in node:
         cats = _decode(node["categories"][:])
-        return cats[node["codes"][:]]
+        codes = node["codes"][:]
+        missing = codes == -1
+        if not missing.any():
+            return cats[codes]
+        vals = np.empty(codes.shape, dtype=object)
+        vals[missing] = np.nan
+        vals[~missing] = cats[codes[~missing]]
+        return vals
     vals = node[:]
     return _decode(vals) if vals.dtype.kind in "SO" else vals
+
+
+def _missing_label_mask(labels: np.ndarray) -> np.ndarray:
+    """Return missing scalar labels without requiring pandas in the core package."""
+    if labels.dtype.kind in "fc":
+        return np.isnan(labels)
+    if labels.dtype.kind in "mM":
+        return np.isnat(labels)
+    if labels.dtype.kind != "O":
+        return np.zeros(labels.shape, dtype=bool)
+
+    def is_missing(value) -> bool:
+        if value is None:
+            return True
+        try:
+            return bool(value != value)
+        except (TypeError, ValueError):
+            # Handles pandas.NA, whose truth value is intentionally ambiguous.
+            return True
+
+    return np.fromiter((is_missing(value) for value in labels), dtype=bool, count=len(labels))

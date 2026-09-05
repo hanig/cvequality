@@ -1,8 +1,11 @@
 """Sufficient statistics against a pandas/numpy reference, and adapter end-to-end behaviour."""
 
 import numpy as np
+import pandas as pd
 import pytest
 import torch
+from anndata import AnnData
+from scipy import sparse
 
 import cvequality as cvq
 from cvequality._backend import Status
@@ -61,6 +64,52 @@ def test_group_stats_from_h5ad_file_matches_anndata(toy_adata, tmp_path):
     np.testing.assert_array_equal(a.var_names, b.var_names)
     torch.testing.assert_close(a.sum, b.sum)
     torch.testing.assert_close(a.n_expressed, b.n_expressed)
+
+
+@pytest.mark.parametrize("from_h5ad", [False, True], ids=["anndata", "h5ad"])
+def test_group_stats_drop_missing_group_labels(from_h5ad, tmp_path):
+    X = np.array(
+        [
+            [1.0, 0.0, 2.0],
+            [9.0, 9.0, 9.0],
+            [0.0, 3.0, 0.0],
+            [4.0, 0.0, 5.0],
+            [7.0, 7.0, 7.0],
+            [0.0, 6.0, 1.0],
+        ]
+    )
+    labels = pd.Categorical(["A", np.nan, "ntc", "A", np.nan, "ntc"])
+    adata = AnnData(
+        sparse.csr_matrix(X),
+        obs=pd.DataFrame({"target_gene_name": labels}, index=[f"c{i}" for i in range(len(X))]),
+        var=pd.DataFrame(index=["g0", "g1", "g2"]),
+    )
+    source = adata
+    if from_h5ad:
+        source = tmp_path / "missing_labels.h5ad"
+        adata.write_h5ad(source)
+
+    with pytest.warns(UserWarning, match=r"2 cells.*missing group labels") as caught:
+        stats = group_sufficient_stats(
+            source,
+            group_key="target_gene_name",
+            transform="counts",
+            device="cpu",
+            progress=False,
+        )
+    assert len(caught) == 1
+    np.testing.assert_array_equal(stats.group_names, ["A", "ntc"])
+
+    observed_labels = np.asarray(adata.obs["target_gene_name"].values)
+    for group in stats.group_names:
+        expected = X[observed_labels == group]
+        i = stats.group_index(group)
+        assert float(stats.n[i]) == len(expected)
+        np.testing.assert_array_equal(stats.sum[i].numpy(), expected.sum(axis=0))
+        np.testing.assert_array_equal(stats.sumsq[i].numpy(), (expected**2).sum(axis=0))
+        np.testing.assert_array_equal(stats.n_expressed[i].numpy(), (expected != 0).sum(axis=0))
+        np.testing.assert_array_equal(stats.sum3[i].numpy(), (expected**3).sum(axis=0))
+        np.testing.assert_array_equal(stats.sum4[i].numpy(), (expected**4).sum(axis=0))
 
 
 def test_cell_mask_equals_prefiltering(toy_adata):
