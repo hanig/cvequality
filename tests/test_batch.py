@@ -163,6 +163,27 @@ def test_float32_warns():
         cvq.asymptotic_test2_batch(n=n, s=s, x=x, device="cpu", dtype=torch.float32)
 
 
+def test_float32_newton_tolerances_track_machine_epsilon():
+    """A representative float32 batch must not be judged by float64's noise floor."""
+    rng = np.random.default_rng(0)
+    T = 200
+    n = np.tile(np.array([2000.0, 700.0]), (T, 1))
+    x = rng.uniform(0.5, 5.0, (T, 2))
+    s = x * rng.uniform(0.5, 2.5, (T, 2))
+
+    with pytest.warns(RuntimeWarning, match="three significant digits"):
+        single = cvq.mslr_test2_batch(
+            n=n, x=x, s=s, nr=16, seed=0, device="cpu", dtype=torch.float32
+        )
+    double = cvq.mslr_test2_batch(
+        n=n, x=x, s=s, nr=16, seed=0, device="cpu", dtype=torch.float64
+    )
+
+    assert bool((single.status == int(Status.OK)).all())
+    assert bool(single.converged.all())
+    torch.testing.assert_close(single.tauh.double(), double.tauh, rtol=1e-4, atol=0)
+
+
 def test_rejects_k_less_than_two():
     with pytest.raises(ValueError, match="k=2"):
         cvq.asymptotic_test2_batch(n=[10.0], s=[1.0], x=[1.0], device="cpu")

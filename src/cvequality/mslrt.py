@@ -60,12 +60,14 @@ __all__ = [
 
 #: Newton needs 2-6 steps in practice; the cap only guards pathological bootstrap draws.
 NEWTON_MAX_ITER = 40
-#: Relative step tolerance for the Newton solver.
+#: Float64 relative step tolerance for the Newton solver. Other dtypes use the same multiple
+#: of machine epsilon.
 NEWTON_TOL = 1e-13
 #: R's absolute tolerance on ``t`` and its iteration cap, for ``solver="fixedpoint"``.
 R_TOL = 1e-7
 R_MAX_ITER = 31
-#: A converged fit must satisfy ``|sum(n x/u)/sum(n) - 1| <= this``.
+#: Float64 bound on ``|sum(n x/u)/sum(n) - 1|``. Other dtypes use the same multiple
+#: of machine epsilon.
 RESIDUAL_TOL = 1e-8
 
 
@@ -102,9 +104,9 @@ def solve_common_cv_batch(
     n: torch.Tensor,
     x: torch.Tensor,
     s: torch.Tensor,
-    tol: float = NEWTON_TOL,
+    tol: Optional[float] = None,
     max_iter: int = NEWTON_MAX_ITER,
-    residual_tol: float = RESIDUAL_TOL,
+    residual_tol: Optional[float] = None,
 ) -> CommonCvFitBatch:
     """Solve the common-CV MLE by Newton on ``F(t) = sum n_j x_j/u_j(t) - sum n_j``.
 
@@ -112,12 +114,19 @@ def solve_common_cv_batch(
     stops as soon as every element's step is below ``tol``. Returns the exact collapsed
     statistic.
 
-    All tensors are ``(..., k)`` and must already be float and broadcast to a common shape.
+    The default step and residual tolerances are scaled from their float64 values by machine
+    epsilon. All tensors are ``(..., k)`` and must already be float and broadcast to a common
+    shape.
     """
     vsq = (n - 1.0) * s * s / n
     N = n.sum(dim=-1, keepdim=True)
 
     t = (n * vsq / (x * x)).sum(dim=-1, keepdim=True) / N  # R's starting value
+    eps_scale = torch.finfo(t.dtype).eps / torch.finfo(torch.float64).eps
+    if tol is None:
+        tol = NEWTON_TOL * eps_scale
+    if residual_tol is None:
+        residual_tol = RESIDUAL_TOL * eps_scale
     active = torch.ones(t.shape[:-1], dtype=torch.bool, device=t.device)
     for _ in range(max_iter):
         u = _u_of_t(t, x, vsq)
