@@ -27,8 +27,16 @@ which for k=2 is the square of the usual two-sample log-SD z.
 calibrated transform is ``log1p``. Assuming normality (``kurt = 3``) leaves the test
 noticeably anti-conservative, but the raw sample kurtosis also makes its inverse-variance
 weight noisy at small group sizes. In Gaussian simulations with a 200,000-cell reference and
-a 100-cell group, raw plug-in kurtosis inflates the 0.05 and 0.01 tails by 1.30x and 1.67x;
-pooling kurtosis across groups in proportion to sample size reduces this to 1.07x and 1.18x.
+a 100-cell group, raw plug-in kurtosis inflates the 0.05 and 0.01 tails by 1.29x and 1.71x;
+the default partial shrinkage reduces this to 1.06x and 1.19x. It first forms the
+sample-size-weighted pooled kurtosis :math:`\\gamma_{4,\\mathrm{pool}}`, then uses
+
+.. math:: \\widetilde{\\gamma}_{4,j} =
+          \\frac{n_j\\gamma_{4,j} + n_0\\gamma_{4,\\mathrm{pool}}}{n_j+n_0}
+
+with :math:`n_0=1000` by default. Thus a 3,000-cell group keeps 75% of its own estimate,
+while a 100-cell group gets 91% of its estimate from the pooled prior; unlike full pooling,
+large groups retain their real kurtosis differences.
 Under ``tp10k`` the same correction is impossible -- its kurtosis estimate is barely
 reproducible between random halves of the same cells, whereas under ``log1p`` it is stable.
 
@@ -53,7 +61,7 @@ NORMAL_KURTOSIS = 3.0
 
 
 class SdRatioResult(NamedTuple):
-    """Batched result. All tensors are ``(T,)``."""
+    """Batched result. Test-level tensors are ``(T,)``."""
 
     #: Wald statistic, chi-square with k-1 df.
     stat: torch.Tensor
@@ -63,6 +71,8 @@ class SdRatioResult(NamedTuple):
     #: Inverse-variance weighted mean of log(sd), i.e. the pooled SD under H0.
     log_sd_pooled: torch.Tensor
     status: torch.Tensor
+    #: Clamped kurtosis after any shrinkage, shaped ``(T, k)``.
+    kurtosis_shrunk: torch.Tensor
 
 
 def sd_ratio_test_batch(
@@ -71,6 +81,7 @@ def sd_ratio_test_batch(
     sd,
     kurtosis=None,
     kurtosis_shrinkage: str = "pooled",
+    kurtosis_prior_n: float = 1000.0,
     device: Union[None, str, torch.device] = None,
     dtype: Optional[torch.dtype] = None,
 ) -> SdRatioResult:
@@ -85,15 +96,25 @@ def sd_ratio_test_batch(
         is measurably anti-conservative on real data -- pass
         :attr:`cvequality.sufficient.GroupStats.kurtosis` instead.
     kurtosis_shrinkage : {"pooled", "none"}
-        ``"pooled"`` (default) replaces the noisy per-group estimates used in the weights
-        with their sample-size-weighted mean within each test. ``"none"`` uses the raw
-        per-group kurtosis estimates.
+        ``"pooled"`` (default) partially shrinks each per-group estimate toward the
+        sample-size-weighted mean within its test. ``"none"`` uses the raw estimates.
+    kurtosis_prior_n : float
+        Strength of the pooled-kurtosis prior, expressed as an effective sample size. With
+        ``"pooled"``, group ``g`` uses ``(n_g * kurtosis_g + kurtosis_prior_n *
+        kurtosis_pool) / (n_g + kurtosis_prior_n)``. Default 1000; zero is exactly the same
+        calculation as ``kurtosis_shrinkage="none"``.
     """
     if kurtosis_shrinkage not in {"pooled", "none"}:
         raise ValueError(
             "kurtosis_shrinkage must be 'pooled' or 'none', got "
             f"{kurtosis_shrinkage!r}"
         )
+    try:
+        kurtosis_prior_n = float(kurtosis_prior_n)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("kurtosis_prior_n must be a finite non-negative number") from exc
+    if not (0.0 <= kurtosis_prior_n < float("inf")):
+        raise ValueError("kurtosis_prior_n must be a finite non-negative number")
     device = resolve_device(device)
     dtype = resolve_dtype(dtype)
     if kurtosis is None:
@@ -114,11 +135,14 @@ def sd_ratio_test_batch(
     # Kurtosis is >= 1 for any distribution; clamp just above so the variance stays positive.
     k4_c = torch.where(safe & torch.isfinite(k4), k4, torch.full_like(k4, NORMAL_KURTOSIS))
     k4_c = k4_c.clamp_min(1.0 + 1e-6)
-    if kurtosis_shrinkage == "pooled":
-        k4_c = (n_c * k4_c).sum(dim=-1, keepdim=True) / n_c.sum(dim=-1, keepdim=True)
+    k4_used = k4_c
+    if kurtosis_shrinkage == "pooled" and kurtosis_prior_n != 0.0:
+        k4_pool = (n_c * k4_c).sum(dim=-1, keepdim=True) / n_c.sum(dim=-1, keepdim=True)
+        n0 = torch.as_tensor(kurtosis_prior_n, device=device, dtype=dtype)
+        k4_used = (n_c * k4_c + n0 * k4_pool) / (n_c + n0)
 
     l = torch.log(sd_c)
-    var = (k4_c - 1.0) / (4.0 * n_c)
+    var = (k4_used - 1.0) / (4.0 * n_c)
     w = 1.0 / var
     w_sum = w.sum(dim=-1)
     lbar = (w * l).sum(dim=-1) / w_sum
@@ -134,6 +158,7 @@ def sd_ratio_test_batch(
         log2_sd_ratio=torch.where(ok, (l[..., -1] - l[..., 0]) / torch.log(torch.tensor(2.0, device=device, dtype=dtype)), nan),
         log_sd_pooled=torch.where(ok, lbar, nan),
         status=status,
+        kurtosis_shrunk=torch.where(ok.unsqueeze(-1), k4_used, nan),
     )
 
 

@@ -160,6 +160,7 @@ def vs_reference(
     layer: Optional[str] = None,
     test: str = "both",
     kurtosis_shrinkage: str = "pooled",
+    kurtosis_prior_n: float = 1000.0,
     nr: int = 1000,
     seed: Optional[int] = 0,
     solver: str = "newton",
@@ -208,8 +209,12 @@ def vs_reference(
         ``asymptotic`` is closed-form and effectively free; ``mslrt`` costs ``nr`` MLE solves
         per test and dominates the runtime.
     kurtosis_shrinkage : {"pooled", "none"}
-        How the SD-ratio test stabilizes its kurtosis estimates. The default pools them in
-        proportion to group size; ``"none"`` preserves raw plug-in weighting.
+        How the SD-ratio test stabilizes its kurtosis estimates. The default partially
+        shrinks them toward their sample-size-weighted pooled estimate; ``"none"`` preserves
+        raw plug-in weighting.
+    kurtosis_prior_n : float
+        Effective sample size of the pooled-kurtosis prior. Default 1000; zero disables
+        shrinkage while retaining ``kurtosis_shrinkage="pooled"`` provenance.
     nr, seed, solver, chunk, share_draws
         Passed to :func:`cvequality.mslrt.mslr_test2_batch`.
     min_cells : int
@@ -236,7 +241,8 @@ def vs_reference(
         frac_expressed_ref, frac_expressed_grp, cv_ref, cv_grp, log2_cv_ratio,
         log2_mean_ratio``, then per
         requested test ``stat_*``, ``pval_*``, ``fdr_*``, plus ``pi_score``, ``status``, and
-        the provenance pair ``cv_transform`` / ``target_sum``. ``fdr_*`` is BH within each
+        the provenance columns ``cv_transform`` / ``target_sum`` and, for SD-ratio,
+        ``kurtosis_shrinkage`` / ``kurtosis_prior_n``. ``fdr_*`` is BH within each
         perturbation, matching how per-perturbation DE tables are usually thresholded.
         ``pi_score`` combines the primary test's p-value with its effect size: the absolute
         ``log2_sd_ratio`` for SD-ratio, or the absolute ``log2_cv_ratio`` for MSLRT and the
@@ -337,12 +343,14 @@ def vs_reference(
             k4 = torch.stack([st.kurtosis[ref_i][idx], st.kurtosis[g][idx]], dim=-1)
             sr = sd_ratio_test_batch(
                 n=n_tk, sd=s_tk, kurtosis=k4,
-                kurtosis_shrinkage=kurtosis_shrinkage, device=device, dtype=dtype,
+                kurtosis_shrinkage=kurtosis_shrinkage, kurtosis_prior_n=kurtosis_prior_n,
+                device=device, dtype=dtype,
             )
             cols["log2_sd_ratio"] = sr.log2_sd_ratio.cpu().numpy()
             cols["kurtosis_ref"] = k4[:, 0].cpu().numpy()
             cols["kurtosis_grp"] = k4[:, 1].cpu().numpy()
             cols["kurtosis_shrinkage"] = kurtosis_shrinkage
+            cols["kurtosis_prior_n"] = float(kurtosis_prior_n)
             cols["stat_sd_ratio"] = sr.stat.cpu().numpy()
             cols["pval_sd_ratio"] = sr.p_value.cpu().numpy()
             status = sr.status.cpu().numpy()
@@ -410,6 +418,7 @@ def omnibus(
     layer: Optional[str] = None,
     test: str = "asymptotic",
     kurtosis_shrinkage: str = "pooled",
+    kurtosis_prior_n: float = 1000.0,
     nr: int = 1000,
     seed: Optional[int] = 0,
     solver: str = "newton",
@@ -440,14 +449,19 @@ def omnibus(
         Defaults to ``asymptotic`` here, since it is the natural screening statistic at this
         scale.
     kurtosis_shrinkage : {"pooled", "none"}
-        How the SD-ratio test stabilizes its kurtosis estimates. The default pools them in
-        proportion to group size; ``"none"`` preserves raw plug-in weighting.
+        How the SD-ratio test stabilizes its kurtosis estimates. The default partially
+        shrinks them toward their sample-size-weighted pooled estimate; ``"none"`` preserves
+        raw plug-in weighting.
+    kurtosis_prior_n : float
+        Effective sample size of the pooled-kurtosis prior. Default 1000; zero disables
+        shrinkage while retaining ``kurtosis_shrinkage="pooled"`` provenance.
 
     Returns
     -------
     pandas.DataFrame
         One row per gene: ``gene, k_groups, n_cells_total, cv_pooled``, then ``stat_*``,
-        ``pval_*``, ``fdr_*`` for each requested test, plus ``status``.
+        ``pval_*``, ``fdr_*`` for each requested test, plus ``status``. SD-ratio output also
+        records ``kurtosis_shrinkage`` and ``kurtosis_prior_n``.
     """
     import pandas as pd
 
@@ -492,11 +506,13 @@ def omnibus(
         k4 = st.kurtosis[gi].T.contiguous()[idx]
         sr = sd_ratio_test_batch(
             n=n_tk, sd=s_tk, kurtosis=k4,
-            kurtosis_shrinkage=kurtosis_shrinkage, device=device, dtype=dtype,
+            kurtosis_shrinkage=kurtosis_shrinkage, kurtosis_prior_n=kurtosis_prior_n,
+            device=device, dtype=dtype,
         )
         cols["stat_sd_ratio"] = sr.stat.cpu().numpy()
         cols["pval_sd_ratio"] = sr.p_value.cpu().numpy()
         cols["kurtosis_shrinkage"] = kurtosis_shrinkage
+        cols["kurtosis_prior_n"] = float(kurtosis_prior_n)
         status = sr.status.cpu().numpy()
     if "asymptotic" in tests:
         a = asymptotic_test2_batch(n=n_tk, s=s_tk, x=x_tk, device=device, dtype=dtype)

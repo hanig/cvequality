@@ -38,16 +38,44 @@ def test_higher_kurtosis_widens_the_null():
     assert p_heavy > p_norm
 
 
-def test_pooled_kurtosis_is_weighted_by_group_size():
+def test_partial_kurtosis_shrinkage_preserves_large_group_information():
+    n = np.array([[200_000.0, 3_000.0]])
+    sd = np.array([[1.0, 1.2]])
+    kurtosis = np.array([[3.0, 6.0]])
+    got = cvq.sd_ratio_test_batch(n=n, sd=sd, kurtosis=kurtosis, device="cpu")
+
+    pooled = (200_000 * 3.0 + 3_000 * 6.0) / 203_000
+    expected = (3_000 * 6.0 + 1_000 * pooled) / 4_000
+    assert expected == pytest.approx(5.261083743842364, rel=1e-15)
+    assert float(got.kurtosis_shrunk[0, 1]) == pytest.approx(expected, abs=0.05)
+    # Also pin the review's intuitive approximation, 0.75 * 6 + 0.25 * 3.003.
+    assert abs(float(got.kurtosis_shrunk[0, 1]) - (0.75 * 6 + 0.25 * 3.003)) < 0.05
+
+
+def test_zero_kurtosis_prior_is_exactly_the_raw_statistic():
+    kwargs = dict(
+        n=np.array([[200_000.0, 3_000.0], [700.0, 120.0]]),
+        sd=np.array([[1.0, 1.2], [0.8, 1.1]]),
+        kurtosis=np.array([[3.0, 6.0], [4.0, 9.0]]),
+        device="cpu",
+    )
+    zero_prior = cvq.sd_ratio_test_batch(**kwargs, kurtosis_prior_n=0)
+    raw = cvq.sd_ratio_test_batch(**kwargs, kurtosis_shrinkage="none")
+    assert torch.equal(zero_prior.stat, raw.stat)
+
+
+def test_very_large_kurtosis_prior_reproduces_full_pooling():
     n = np.array([[1000.0, 100.0]])
     sd = np.array([[1.0, 1.2]])
     kurtosis = np.array([[3.0, 9.0]])
     pooled = np.full_like(kurtosis, (1000 * 3.0 + 100 * 9.0) / 1100)
-    got = cvq.sd_ratio_test_batch(n=n, sd=sd, kurtosis=kurtosis, device="cpu")
-    expected = cvq.sd_ratio_test_batch(
+    got = cvq.sd_ratio_test_batch(
+        n=n, sd=sd, kurtosis=kurtosis, kurtosis_prior_n=1e12, device="cpu"
+    )
+    full_pool = cvq.sd_ratio_test_batch(
         n=n, sd=sd, kurtosis=pooled, kurtosis_shrinkage="none", device="cpu"
     )
-    torch.testing.assert_close(got.stat, expected.stat)
+    torch.testing.assert_close(got.stat, full_pool.stat, rtol=1e-8, atol=0)
 
 
 def test_equal_sds_give_a_uniformly_distributed_statistic():
@@ -64,7 +92,7 @@ def test_equal_sds_give_a_uniformly_distributed_statistic():
 
 
 def test_kurtosis_shrinkage_calibrates_a_small_group_against_a_large_reference():
-    """Pooling removes the small group's noisy fourth moment from its null variance."""
+    """Partial shrinkage stabilizes the small group's noisy fourth moment."""
     rng = np.random.default_rng(123)
     T, n_ref, n_grp = 20_000, 200_000, 100
     sd_ref = np.sqrt(rng.chisquare(n_ref - 1, T) / (n_ref - 1))
@@ -199,11 +227,13 @@ def test_sd_ratio_separates_dispersion_from_de_better_than_the_cv(called, screen
 
 
 def test_kurtosis_columns_are_reported(called):
-    for col in ("kurtosis_ref", "kurtosis_grp", "kurtosis_shrinkage", "log2_sd_ratio",
-                "stat_sd_ratio", "pval_sd_ratio", "fdr_sd_ratio"):
+    for col in ("kurtosis_ref", "kurtosis_grp", "kurtosis_shrinkage",
+                "kurtosis_prior_n", "log2_sd_ratio", "stat_sd_ratio", "pval_sd_ratio",
+                "fdr_sd_ratio"):
         assert col in called.columns
     assert (called["kurtosis_ref"] >= 1.0).all()
     assert (called["kurtosis_shrinkage"] == "pooled").all()
+    assert (called["kurtosis_prior_n"] == 1000.0).all()
 
 
 def test_requires_moments(screen_stats):
