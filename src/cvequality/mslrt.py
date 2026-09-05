@@ -299,9 +299,12 @@ def mslr_test2_batch(
     Notes
     -----
     Bootstrap draws can put a group mean at or below zero (``x* = u + z tau u/sqrt(n)``, so
-    at ``n=30, tau=2`` roughly 0.3% of draws), which is outside the model's support. Such
-    replicates are **discarded** from the null moments rather than contributing a garbage
-    statistic; ``n_valid`` reports how many survived. R has no such guard.
+    for one group at ``n=30``, ``Phi(-sqrt(n)/tau)`` is 0.31% of draws at ``tau=2``, 3.4% at
+    ``tau=3``, and 8.5% at ``tau=4``; the fixture grid reaches CV 4. Such replicates are
+    **discarded** from the null moments rather than contributing a garbage statistic;
+    ``n_valid`` reports how many survived. The observed statistic is not subject to this
+    truncation, so at small ``n`` and high CV the bootstrap null is slightly mismatched. R has
+    no such guard.
     """
     device = resolve_device(device)
     dtype = resolve_dtype(dtype)

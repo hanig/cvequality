@@ -110,8 +110,10 @@ F(t) = Σ nⱼ·xⱼ/uⱼ(t) − Σ nⱼ = 0        F′(t) = Σ nⱼ·xⱼ / (2
 
 Since `duⱼ/dt < 0`, the left side is strictly increasing whenever all means are positive: the
 root is **unique** and Newton is unconditionally safe. It converges in **2–6 iterations**,
-agreeing with a 20,000-iteration fixed-point run to 1e-15. At the root the quadratic terms
-provably cancel, so `stat = 2·Σ nⱼ·log(τ̂uⱼ/vⱼ^½)` is exact and cancellation-free.
+and across the fixture grid its worst relative difference in `t` from a 20,000-iteration
+fixed-point run was 8.71e-15; the regression test asserts 1e-9 relative. At the root the
+quadratic terms provably cancel, so `stat = 2·Σ nⱼ·log(τ̂uⱼ/vⱼ^½)` is exact and
+cancellation-free.
 
 | `solver=` | behaviour | use for |
 |---|---|---|
@@ -133,11 +135,15 @@ not a change in conclusions.
 |---|---|---|
 | `"counts"` | raw values | CV inflated by per-cell sequencing-depth variation |
 | `"tp10k"` | `target_sum · count / total(cell)` | the literal CV of expression, and the only **scale-free** option |
-| `"log1p"` (default) | `log1p(tp10k)` | variance-stabilized; the calibrated default |
+| `"log1p"` (default) | `log1p(tp10k)` | variance-stabilized; not inflated (conservative by about half at 0.05) on the reference screen |
 | callable | your function on the stored values | bring your own |
 
-The default is `log1p` for a specific reason. Both CV tests rest on the sampling variance of
-the CV, which by the delta method depends on the kurtosis of the values:
+The default is `log1p` because it avoids false-positive inflation on the real screen, not
+because its null p-values are uniform. In the reference-vs-itself null, the `log1p` CV tests
+were not inflated but conservative: P(p < 0.05) was 0.022 to 0.031 across group sizes 30 to
+3000, or 0.45x to 0.6x nominal, with mean p-value about 0.61. `tp10k` was anti-conservative:
+2.9x at n=722 and 4.6x at n=3000. Both CV tests rest on the sampling variance of the CV, which
+by the delta method depends on the kurtosis of the values:
 
 ```
 Var(ĉv) ≈ (cv²/n)·[ cv² + (γ₄−1)/4 − cv·γ₃ ]
@@ -258,9 +264,12 @@ failures are countable rather than silent, and never poison their neighbours in 
 | 4 | `NOT_CONVERGED` | the MLE missed its tolerance (`solver="newton"` only; under `"fixedpoint"` this is R's normal behaviour and is reported in `converged` instead) |
 | 5 | `NON_FINITE` | non-finite for another reason |
 
-Bootstrap draws can put a group mean ≤ 0, outside the model's support. Those replicates are
-**discarded** from the null moments rather than contributing a garbage statistic; `n_valid`
-reports how many survived. R has no such guard.
+Bootstrap draws can put a group mean ≤ 0, outside the model's support. For one group at n=30,
+`Phi(-sqrt(n)/tau)` is 0.31% of draws at tau=2, 3.4% at tau=3, and 8.5% at tau=4 (the fixture
+grid reaches CV 4). Those replicates are **discarded** from the null moments rather than
+contributing a garbage statistic; `n_valid` reports how many survived. The observed statistic
+is not subject to this truncation, so at small n and high CV the bootstrap null is slightly
+mismatched. R has no such guard.
 
 ---
 
@@ -273,7 +282,7 @@ suite plus a randomized `(k, n, mean, sd)` grid — k=2 to k≈2000, n up to 2e5
 ```bash
 Rscript scripts/install_r_cvequality.R      # pure base R, no dependencies
 Rscript tests/r/generate_fixtures.R
-pytest tests/ -q                            # 86 pass, 6 GPU-skipped without a device
+pytest tests/ -q                            # 90 pass, 6 GPU-skipped without a device
 ```
 
 | quantity | tolerance | note |
@@ -281,7 +290,7 @@ pytest tests/ -q                            # 86 pass, 6 GPU-skipped without a d
 | `D_AD`, its p-value | 1e-12 relative | closed form; exact agreement expected |
 | `LRT_STAT`'s `u`, `τ̂` | 1e-12 relative | including R's off-by-one |
 | `LRT_STAT`'s statistic | 1e-8 relative | R's own cancellation floor at large n |
-| Newton vs a 20,000-iteration fixed point | 1e-9 | same root |
+| Newton vs a 20,000-iteration fixed point | 1e-9 relative | worst observed difference was 8.71e-15 relative on `t`; same root |
 | collapsed vs literal statistic | within the literal form's cancellation bound, computed per case | asserts the exactness claim honestly |
 | MSLRT null mean / SD vs R | 6 × the Monte Carlo SE | the null is heavy-tailed, so normal theory understates the SE — measured, and itself guarded by a test |
 | MSLRT statistic vs R's published value | within MC error over 24 seeds | R's RNG stream is not reproducible from torch |

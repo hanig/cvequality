@@ -1,9 +1,14 @@
-"""The CLI, since `scripts/run_sharded.sbatch` depends on it and sbatch failures are slow."""
+"""The CLI usage documented in :mod:`cvequality.__main__`."""
 
 import numpy as np
 import pytest
 
 from cvequality.__main__ import main
+
+
+def test_module_docstring_points_to_versioned_cli_usage():
+    assert "cvequality.__main__" in __doc__
+    assert "run_sharded.sbatch" not in __doc__
 
 
 @pytest.fixture(scope="module")
