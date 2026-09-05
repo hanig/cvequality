@@ -42,6 +42,55 @@ def test_stats_then_vs_reference_shards(h5ad, tmp_path):
     assert not set(parts[0]["perturbation"]) & set(parts[1]["perturbation"])
 
 
+def test_vs_reference_all_tests(h5ad, tmp_path):
+    import pandas as pd
+
+    out = str(tmp_path / "all.parquet")
+    assert main([
+        "vs-reference", "--source", h5ad, "--out", out, "--test", "all", "--nr", "64",
+        "--device", "cpu", "--quiet",
+    ]) == 0
+    df = pd.read_parquet(out)
+    assert {
+        "pval_asymptotic", "pval_mslrt", "pval_sd_ratio", "fdr_sd_ratio",
+    } <= set(df.columns)
+
+
+def test_vs_reference_sd_ratio_with_mean_stats(h5ad, tmp_path):
+    import pandas as pd
+
+    mean_stats = str(tmp_path / "tp10k.pt")
+    assert main([
+        "stats", "--source", h5ad, "--out", mean_stats, "--transform", "tp10k",
+        "--device", "cpu", "--quiet",
+    ]) == 0
+
+    out = str(tmp_path / "sd-ratio.parquet")
+    assert main([
+        "vs-reference", "--source", h5ad, "--out", out, "--test", "sd_ratio",
+        "--mean-stats", mean_stats, "--device", "cpu", "--quiet",
+    ]) == 0
+    assert set(pd.read_parquet(out)["mean_ratio_transform"]) == {"tp10k"}
+
+
+def test_sd_ratio_omnibus_and_null(h5ad, tmp_path):
+    import pandas as pd
+
+    out = str(tmp_path / "sd-ratio-omni.parquet")
+    assert main([
+        "omnibus", "--source", h5ad, "--out", out, "--test", "sd_ratio",
+        "--device", "cpu", "--quiet",
+    ]) == 0
+    assert "pval_sd_ratio" in pd.read_parquet(out)
+
+    out = str(tmp_path / "sd-ratio-null.parquet")
+    assert main([
+        "null", "--source", h5ad, "--out", out, "--test", "sd_ratio",
+        "--match-size", "100", "--device", "cpu", "--quiet",
+    ]) == 0
+    assert "pval_sd_ratio" in pd.read_parquet(out)
+
+
 def test_omnibus_and_null(h5ad, tmp_path):
     import pandas as pd
 
