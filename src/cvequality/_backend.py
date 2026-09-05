@@ -64,15 +64,18 @@ def resolve_dtype(dtype: Union[None, torch.dtype] = None) -> torch.dtype:
 
     float32 is allowed but warns: the literal R form of the LRT statistic is a difference
     of two ``O(n log n)`` quantities, so at n ~ 2e5 it loses every significant digit. The
-    collapsed form (used whenever the MLE is solved to convergence) is well conditioned, but
-    the bootstrap moments still accumulate over ``nr`` replicates.
+    collapsed form (used whenever the MLE is solved to convergence) is well conditioned but
+    typically retains only about three significant digits at those group sizes, and the
+    bootstrap moments still accumulate over ``nr`` replicates.
     """
     if dtype is None:
         return torch.float64
     if dtype == torch.float32:
         warnings.warn(
-            "float32 loses precision in the LRT statistic at single-cell group sizes; "
-            "float64 is the default and costs little on H100 (1:2 fp64 throughput).",
+            "float32 typically retains only about three significant digits in the collapsed "
+            "LRT statistic at single-cell group sizes (and the fixed-point form can lose "
+            "all significant digits); float64 is the default and costs little on H100 "
+            "(1:2 fp64 throughput).",
             RuntimeWarning,
             stacklevel=2,
         )
