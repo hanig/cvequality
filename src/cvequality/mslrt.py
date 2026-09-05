@@ -283,10 +283,13 @@ def mslr_test2_batch(
     chunk : int, optional
         Tests per bootstrap step. Defaults to a memory-aware size derived from free device
         memory; the bootstrap materializes ``(chunk, nr, k)`` buffers. Each chunk draws from
-        a generator seeded by ``(seed, global start index)``, so a given ``chunk`` value
-        reproduces bit for bit. Different ``chunk`` values consume the RNG differently and
-        therefore agree only up to Monte Carlo error -- pass ``chunk`` explicitly if you need
-        results that do not depend on how much memory happened to be free.
+        a generator seeded by ``(seed, start position in the compacted batch of OK tests)``.
+        Changing which neighbouring rows are degenerate can therefore shift an OK row's
+        compacted position and change its result by Monte Carlo error. The same inputs with
+        the same ``seed`` and ``chunk`` reproduce bit for bit. Different ``chunk`` values
+        consume the RNG differently and therefore agree only up to Monte Carlo error -- pass
+        ``chunk`` explicitly if you need results that do not depend on how much memory
+        happened to be free.
     share_draws : bool
         Reuse one ``(nr, k)`` set of draws across every test in the batch (common random
         numbers). Requires all tests to share the same ``n``. Each test's bootstrap sample
@@ -340,28 +343,34 @@ def mslr_test2_batch(
     else:
         status = torch.where(ok & ~torch.isfinite(fit0.stat), i8(Status.NON_FINITE), status)
 
-    df = (n_c - 1.0).unsqueeze(1)  # (T,1,k)
-    u0 = fit0.u
-    sh0 = fit0.tauh.unsqueeze(-1) * u0
-    se0 = sh0 / torch.sqrt(n_c)
-
     if share_draws:
         spread = (n_t - n_t[:1]).abs().max()
         if bool(spread > 0):
             raise ValueError("share_draws=True requires every test in the batch to share the same n")
-        shared_df = (n_t[:1] - 1.0).unsqueeze(1)
 
-    null_mean = torch.empty(T, device=device, dtype=dtype)
-    null_sd = torch.empty(T, device=device, dtype=dtype)
+    ok = status == int(Status.OK)
+    ok_idx = torch.nonzero(ok, as_tuple=False).squeeze(-1)
+    n_ok = n_t[ok_idx]
+    df = (n_ok - 1.0).unsqueeze(1)  # (T_ok,1,k)
+    u0 = fit0.u[ok_idx]
+    sh0 = fit0.tauh[ok_idx].unsqueeze(-1) * u0
+    se0 = sh0 / torch.sqrt(n_ok)
+    if share_draws:
+        shared_df = (n_ok[:1] - 1.0).unsqueeze(1)
+
+    nan = torch.tensor(float("nan"), device=device, dtype=dtype)
+    null_mean = torch.full((T,), nan, device=device, dtype=dtype)
+    null_sd = torch.full((T,), nan, device=device, dtype=dtype)
     n_valid = torch.zeros(T, device=device, dtype=torch.int64)
 
-    step = pick_chunk(T, nr, k, device=device, dtype=dtype, requested=chunk)
-    for start in range(0, T, step):
-        stop = min(start + step, T)
+    T_ok = ok_idx.numel()
+    step = pick_chunk(T_ok, nr, k, device=device, dtype=dtype, requested=chunk) if T_ok else 1
+    for start in range(0, T_ok, step):
+        stop = min(start + step, T_ok)
         c = stop - start
         dfc = df[start:stop]
-        # Seed from the chunk's global start so a given `chunk` value is bit-reproducible
-        # regardless of iteration order or how many chunks came before.
+        # Seed from the chunk's start in the compacted batch so a given `chunk` value is
+        # bit-reproducible regardless of iteration order or how many chunks came before.
         gen = make_generator(None if seed is None else seed * 1_000_003 + start, device)
         if share_draws:
             z = standard_normal((1, nr, k), device=device, dtype=dtype, generator=gen).expand(c, nr, k)
@@ -372,7 +381,7 @@ def mslr_test2_batch(
 
         xb = u0[start:stop].unsqueeze(1) + z * se0[start:stop].unsqueeze(1)
         sb = sh0[start:stop].unsqueeze(1) * torch.sqrt(ch / dfc)
-        nb = n_c[start:stop].unsqueeze(1).expand(c, nr, k)
+        nb = n_ok[start:stop].unsqueeze(1).expand(c, nr, k)
 
         # Replicates outside the model's support: neutralize before solving, drop after.
         good = (xb > 0).all(dim=-1)
@@ -388,11 +397,12 @@ def mslr_test2_batch(
         mean_c = st.sum(dim=1) / cnt
         # sum((st-mean)^2) restricted to valid replicates, then ddof=1 as R's sd()
         var_c = ((st - mean_c.unsqueeze(1)) ** 2 * w).sum(dim=1) / (cnt - 1.0)
-        null_mean[start:stop] = mean_c
-        null_sd[start:stop] = torch.sqrt(var_c)
-        n_valid[start:stop] = cnt.to(torch.int64)
+        dest = ok_idx[start:stop]
+        null_mean[dest] = mean_c
+        null_sd[dest] = torch.sqrt(var_c)
+        n_valid[dest] = cnt.to(torch.int64)
         if progress:
-            print(f"  mslrt {stop}/{T} tests", flush=True)
+            print(f"  mslrt {stop}/{T_ok} tests", flush=True)
         del z, ch, xb, sb, nb, fb, st, w
 
     statm = torch.sqrt(torch.tensor(2.0 * (k - 1), device=device, dtype=dtype)) * (
@@ -404,7 +414,6 @@ def mslr_test2_batch(
     bad = ok & (~torch.isfinite(statm) | (n_valid < 2))
     status = torch.where(bad, i8(Status.NON_FINITE), status)
     ok = status == int(Status.OK)
-    nan = torch.tensor(float("nan"), device=device, dtype=dtype)
     return MslrtResult(
         MSLRT=torch.where(ok, statm, nan),
         p_value=torch.where(ok, p, nan),
