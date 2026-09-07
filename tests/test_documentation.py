@@ -26,8 +26,8 @@ def test_readme_reports_measured_solver_agreement_and_assertion():
         fixedpoint_t = _fixedpoint_t(n, x, s, 20_000)
         worst = max(worst, float(relerr(newton_t, fixedpoint_t)))
 
-    assert f"{worst:.2e}" == "8.71e-15"
-    assert README.count("8.71e-15") == 2
+    assert f"{worst:.2e}" == "8.97e-15"
+    assert README.count("8.97e-15") == 2
     assert README.count("1e-9 relative") == 2
 
 

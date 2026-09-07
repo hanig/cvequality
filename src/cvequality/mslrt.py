@@ -66,9 +66,9 @@ NEWTON_TOL = 1e-13
 #: R's absolute tolerance on ``t`` and its iteration cap, for ``solver="fixedpoint"``.
 R_TOL = 1e-7
 R_MAX_ITER = 31
-#: Float64 bound on ``|sum(n x/u)/sum(n) - 1|``. Other dtypes use the same multiple
-#: of machine epsilon.
-RESIDUAL_TOL = 1e-8
+#: Float64 bound on ``|sum(n (x/u - 1))/sum(n)|``. Other dtypes use the same
+#: multiple of machine epsilon.
+RESIDUAL_TOL = 1e-12
 
 
 class CommonCvFitBatch(NamedTuple):
@@ -95,6 +95,36 @@ def _u_of_t(t: torch.Tensor, x: torch.Tensor, vsq: torch.Tensor) -> torch.Tensor
     return (-x + torch.sqrt(x * x + 4.0 * t * (vsq + x * x))) / 2.0 / t
 
 
+def _newton_terms(
+    t: torch.Tensor, x: torch.Tensor, vsq: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Cancellation-free ``u``, ``x/u - 1``, and ``d(x/u)/dt`` for Newton.
+
+    The literal R root in :func:`_u_of_t` loses all useful digits when ``t`` is small and
+    ``x`` is positive.  Rationalizing it gives
+
+    ``u = 2 (vsq + x^2) / (x + sqrt(x^2 + 4 t (vsq + x^2)))``.
+
+    Computing ``x/u - 1`` from that result would introduce a second cancellation.  The
+    centered expression below follows by rationalizing ``sqrt(...) - x`` as well.  Centering
+    each group before summing also avoids subtracting two nearly equal ``O(sum(n))`` totals.
+
+    Newton is used only for positive-mean data, but the direct-root branches keep this
+    low-level helper finite for negative ``x`` too.  The R fixed-point path deliberately
+    continues to use :func:`_u_of_t` unchanged.
+    """
+    a = vsq + x * x
+    root = torch.sqrt(x * x + 4.0 * t * a)
+    positive_x = x >= 0
+    u_rational = 2.0 * a / (x + root)
+    u_direct = (-x + root) / (2.0 * t)
+    u = torch.where(positive_x, u_rational, u_direct)
+    centered_rational = 2.0 * x * t / (root + x) - vsq / a
+    centered = torch.where(positive_x, centered_rational, x / u - 1.0)
+    derivative = x / root  # root == 2 t u + x
+    return u, centered, derivative
+
+
 def _collapsed_stat(n: torch.Tensor, u: torch.Tensor, tauh: torch.Tensor, vsq: torch.Tensor):
     return 2.0 * (n * torch.log(tauh.unsqueeze(-1) * u / torch.sqrt(vsq))).sum(dim=-1)
 
@@ -111,8 +141,8 @@ def solve_common_cv_batch(
     """Solve the common-CV MLE by Newton on ``F(t) = sum n_j x_j/u_j(t) - sum n_j``.
 
     ``F'(t) = sum n_j x_j / (2 t u_j + x_j)``. Elements converge independently; iteration
-    stops as soon as every element's step is below ``tol``. Returns the exact collapsed
-    statistic.
+    stops when both the relative step in ``t`` and the centered, scale-free residual meet
+    their tolerances. Returns the exact collapsed statistic.
 
     The default step and residual tolerances are scaled from their float64 values by machine
     epsilon. All tensors are ``(..., k)`` and must already be float and broadcast to a common
@@ -128,24 +158,37 @@ def solve_common_cv_batch(
     if residual_tol is None:
         residual_tol = RESIDUAL_TOL * eps_scale
     active = torch.ones(t.shape[:-1], dtype=torch.bool, device=t.device)
+    tiny = torch.finfo(t.dtype).tiny
     for _ in range(max_iter):
-        u = _u_of_t(t, x, vsq)
-        F = (n * x / u).sum(dim=-1, keepdim=True) - N
-        Fp = (n * x / (2.0 * t * u + x)).sum(dim=-1, keepdim=True)
-        t_new = t - F / Fp
+        _, centered, derivative = _newton_terms(t, x, vsq)
+        residual_signed = (n * centered).sum(dim=-1, keepdim=True) / N
+        derivative_scaled = (n * derivative).sum(dim=-1, keepdim=True) / N
+        delta = residual_signed / derivative_scaled
+        t_new = t - delta
         # F is monotone increasing for x>0, so retreating toward 0 is always a safe repair
         # for a step that overshoots into non-positive t (or goes non-finite).
-        t_new = torch.where(t_new > 0, t_new, t * 0.5)
-        step_small = ((t_new - t).abs() <= tol * t.clamp_min(1.0)).squeeze(-1)
+        safe_step = (t_new > 0) & torch.isfinite(t_new)
+        t_new = torch.where(safe_step, t_new, t * 0.5)
+        step_small = (delta.abs() <= tol * t.abs().clamp_min(tiny)).squeeze(-1)
+        residual_small = (residual_signed.abs() <= residual_tol).squeeze(-1)
         t = torch.where(active.unsqueeze(-1), t_new, t)
-        active = active & ~step_small
+        active = active & ~(step_small & residual_small)
         if not bool(active.any()):
             break
 
-    u = _u_of_t(t, x, vsq)
+    u, centered, derivative = _newton_terms(t, x, vsq)
     tauh = torch.sqrt(t).squeeze(-1)
-    residual = ((n * x / u).sum(dim=-1) / N.squeeze(-1) - 1.0).abs()
-    converged = torch.isfinite(residual) & (residual <= residual_tol)
+    residual_signed = (n * centered).sum(dim=-1) / N.squeeze(-1)
+    derivative_scaled = (n * derivative).sum(dim=-1) / N.squeeze(-1)
+    correction = (residual_signed / derivative_scaled).abs()
+    residual = residual_signed.abs()
+    step_small = correction <= tol * t.squeeze(-1).abs().clamp_min(tiny)
+    converged = (
+        torch.isfinite(residual)
+        & torch.isfinite(correction)
+        & (residual <= residual_tol)
+        & step_small
+    )
     stat = _collapsed_stat(n, u, tauh, vsq)
     converged = converged & torch.isfinite(stat)
     return CommonCvFitBatch(u=u, tauh=tauh, stat=stat, converged=converged, residual=residual)

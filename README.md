@@ -111,7 +111,7 @@ F(t) = Σ nⱼ·xⱼ/uⱼ(t) − Σ nⱼ = 0        F′(t) = Σ nⱼ·xⱼ / (2
 Since `duⱼ/dt < 0`, the left side is strictly increasing whenever all means are positive: the
 root is **unique** and Newton is unconditionally safe. It converges in **2–6 iterations**,
 and across the fixture grid its worst relative difference in `t` from a 20,000-iteration
-fixed-point run was 8.71e-15; the regression test asserts 1e-9 relative. At the root the
+fixed-point run was 8.97e-15; the regression test asserts 1e-9 relative. At the root the
 quadratic terms provably cancel, so `stat = 2·Σ nⱼ·log(τ̂uⱼ/vⱼ^½)` is exact and
 cancellation-free.
 
@@ -297,7 +297,7 @@ pytest tests/ -q                            # 90 pass, 6 GPU-skipped without a d
 | `D_AD`, its p-value | 1e-12 relative | closed form; exact agreement expected |
 | `LRT_STAT`'s `u`, `τ̂` | 1e-12 relative | including R's off-by-one |
 | `LRT_STAT`'s statistic | 1e-8 relative | R's own cancellation floor at large n |
-| Newton vs a 20,000-iteration fixed point | 1e-9 relative | worst observed difference was 8.71e-15 relative on `t`; same root |
+| Newton vs a 20,000-iteration fixed point | 1e-9 relative | worst observed difference was 8.97e-15 relative on `t`; same root |
 | collapsed vs literal statistic | within the literal form's cancellation bound, computed per case | asserts the exactness claim honestly |
 | MSLRT null mean / SD vs R | 6 × the Monte Carlo SE | the null is heavy-tailed, so normal theory understates the SE — measured, and itself guarded by a test |
 | MSLRT statistic vs R's published value | within MC error over 24 seeds | R's RNG stream is not reproducible from torch |
