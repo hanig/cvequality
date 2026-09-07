@@ -284,6 +284,41 @@ def _read_h5ad_array(node) -> np.ndarray:
 GATHER_FRACTION = 0.05
 
 
+def _canonicalize_csr_block(
+    indices: np.ndarray,
+    data: np.ndarray,
+    row_lengths: np.ndarray,
+    n_genes: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return a canonical, zero-free copy of one streamed CSR block.
+
+    Sparse formats permit duplicate coordinates and explicitly stored zeros.  Both are
+    storage details rather than distinct observations: duplicates must be summed before a
+    nonlinear transform or power is applied, and a stored zero must not count as an
+    expressed cell.  Canonicalizing at the block boundary gives every input path (including
+    direct h5ad streaming) the same semantics without ever mutating the source matrix.
+    """
+    import scipy.sparse as sp
+
+    lengths = np.asarray(row_lengths, dtype=np.int64)
+    indptr = np.empty(len(lengths) + 1, dtype=np.int64)
+    indptr[0] = 0
+    np.cumsum(lengths, out=indptr[1:])
+    block = sp.csr_matrix(
+        (
+            np.array(data, copy=True),
+            np.array(indices, dtype=np.int64, copy=True),
+            indptr,
+        ),
+        shape=(len(lengths), n_genes),
+        copy=False,
+    )
+    block.sum_duplicates()
+    block.eliminate_zeros()
+    block.sort_indices()
+    return block.indices, block.data, np.diff(block.indptr)
+
+
 def _iter_row_blocks(
     kind, shape, target_nnz: int, selected: Optional[np.ndarray] = None
 ) -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
@@ -499,6 +534,10 @@ def group_sufficient_stats(
             keep = selected[cells]
             if not keep.any():
                 continue  # whole block is unwanted -- skip the GPU work entirely
+            # CSR may legally contain duplicate coordinates and explicit zeros.  Merge and
+            # remove those storage artifacts before totals, transforms, powers, or expression
+            # counts are computed.  The helper copies its inputs, preserving source storage.
+            idx, data, lens = _canonicalize_csr_block(idx, data, lens, n_genes)
             gene = torch.from_numpy(np.asarray(idx, dtype=np.int64)).to(device, non_blocking=True)
             vals = torch.from_numpy(np.ascontiguousarray(data)).to(
                 device=device, dtype=dtype, non_blocking=True
