@@ -229,8 +229,10 @@ class GroupStats:
 def _open_matrix(source, layer: Optional[str] = None):
     """Return ``(handle, kind, shape, var_names, obs_getter)`` for a supported source.
 
-    Supported: path to ``.h5ad``, an :class:`anndata.AnnData` (in-memory or backed), or a
-    ``(matrix, var_names)`` tuple for tests.
+    Supported: path to a CSR ``.h5ad`` or an :class:`anndata.AnnData`. Backed AnnData CSR
+    and dense matrices are streamed; on-disk backed CSC is rejected because row slicing it
+    reads the entire column-compressed dataset. In-memory matrices and layers may use any
+    scipy sparse format.
     """
     if isinstance(source, (str, os.PathLike)):
         import h5py
@@ -241,7 +243,8 @@ def _open_matrix(source, layer: Optional[str] = None):
         if enc != "csr_matrix":
             raise NotImplementedError(
                 f"only CSR (cell-major) h5ad matrices are supported; {layer or 'X'} is {enc!r}. "
-                "Load it with anndata and pass the AnnData instead."
+                "Rewrite it as CSR for streaming, or load it fully into memory with anndata "
+                "and pass the AnnData instead."
             )
         shape = tuple(int(v) for v in grp.attrs["shape"])
         var_names = _read_h5ad_array(f["var"][f["var"].attrs["_index"]])
@@ -251,6 +254,16 @@ def _open_matrix(source, layer: Optional[str] = None):
 
         if hasattr(source, "obs") and hasattr(source, "var"):
             X = source.X if layer is None else source.layers[layer]
+            if (
+                source.isbacked
+                and getattr(X, "format", None) == "csc"
+                and hasattr(X, "to_memory")
+            ):
+                raise NotImplementedError(
+                    f"backed CSC {layer or 'X'} cannot be streamed in bounded row blocks; "
+                    "convert it to CSR and rewrite the .h5ad for streaming, or load the "
+                    "AnnData into memory before passing it"
+                )
             # A backed AnnData exposes a sliceable on-disk dataset rather than a numpy or
             # scipy matrix.  Keep it distinct so _iter_row_blocks slices it before doing
             # any conversion; np.asarray(backed_sparse_dataset) is a 0-dimensional object
@@ -381,7 +394,10 @@ def _iter_row_blocks(
     import scipy.sparse as sp
 
     if tag == "backed_anndata":
-        # Backed dense, CSR and CSC datasets all support bounded row slicing in AnnData.
+        # Backed dense and CSR datasets support bounded row slicing in AnnData. On-disk CSC
+        # is rejected by _open_matrix because AnnData's row slice reads all compressed
+        # columns before applying the row selection. A backed object's already in-memory
+        # scipy layers also come through this path and are safe to slice.
         # Choose rows conservatively from the dense upper bound: a batch then contains no
         # more than target_nnz matrix entries (except for the unavoidable single-row case).
         # This avoids relying on private on-disk indptr details and also works for layers.
@@ -399,7 +415,7 @@ def _iter_row_blocks(
             if cells.size == 0:
                 continue
             # A slice is preferable for contiguous rows: h5py handles it efficiently, and
-            # AnnData's backed sparse datasets return the same scipy sparse block either way.
+            # AnnData's backed CSR datasets return the same scipy sparse block either way.
             row_index = (
                 slice(int(cells[0]), int(cells[-1]) + 1)
                 if cells.size == int(cells[-1]) - int(cells[0]) + 1
@@ -467,7 +483,11 @@ def group_sufficient_stats(
     Parameters
     ----------
     source : str or PathLike or AnnData
-        Path to a CSR ``.h5ad`` (read with h5py, never loaded whole) or an AnnData.
+        Path to a CSR ``.h5ad`` (read with h5py, never loaded whole) or an AnnData. Backed
+        AnnData CSR and dense matrices are streamed in bounded row blocks. On-disk backed CSC
+        is not row-streamable in AnnData and raises before matrix data is read; convert it to
+        CSR and rewrite the ``.h5ad``, or load the AnnData into memory. In-memory CSC matrices
+        and layers remain supported.
     groups : array_like, optional
         Per-cell group label. Either this or ``group_key`` must be given.
     group_key : str, optional
