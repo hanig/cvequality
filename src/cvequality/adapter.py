@@ -275,8 +275,16 @@ def vs_reference(
 
     ref_i = st.group_index(reference)
     n_ref = st.n[ref_i]
-    mean_ref, sd_ref = st.mean[ref_i], st.sd[ref_i]
-    frac_ref = st.frac_expressed[ref_i]
+    # These properties derive full (groups, genes) tables.  Materialize each table once for
+    # this comparison rather than rebuilding it for every target below.  Keep the cache local:
+    # GroupStats is mutable, so retaining derived values across calls would be unsafe.
+    mean = st.mean
+    sd = st.sd
+    frac_expressed = st.frac_expressed
+    kurtosis = st.kurtosis if "sd_ratio" in tests else None
+    ratio_mean = mst.mean if mst is not None else None
+    mean_ref, sd_ref = mean[ref_i], sd[ref_i]
+    frac_ref = frac_expressed[ref_i]
 
     keep = [
         g for g in range(len(st.group_names))
@@ -299,14 +307,14 @@ def vs_reference(
         n_g = st.n[g]
         sel = torch.ones(len(genes), dtype=torch.bool, device=device)
         if min_frac_expressed > 0:
-            sel = (frac_ref >= min_frac_expressed) & (st.frac_expressed[g] >= min_frac_expressed)
+            sel = (frac_ref >= min_frac_expressed) & (frac_expressed[g] >= min_frac_expressed)
         idx = torch.nonzero(sel, as_tuple=True)[0]
         if idx.numel() == 0:
             continue
 
         n_tk = torch.stack([n_ref.expand(idx.numel()), n_g.expand(idx.numel())], dim=-1)
-        x_tk = torch.stack([mean_ref[idx], st.mean[g][idx]], dim=-1)
-        s_tk = torch.stack([sd_ref[idx], st.sd[g][idx]], dim=-1)
+        x_tk = torch.stack([mean_ref[idx], mean[g][idx]], dim=-1)
+        s_tk = torch.stack([sd_ref[idx], sd[g][idx]], dim=-1)
 
         cols = {
             "perturbation": np.repeat(st.group_names[g], idx.numel()),
@@ -321,7 +329,7 @@ def vs_reference(
             # filtering, and for stratifying calibration (normality of per-cell values fails
             # hardest for sparsely expressed genes).
             "frac_expressed_ref": frac_ref[idx].cpu().numpy(),
-            "frac_expressed_grp": st.frac_expressed[g][idx].cpu().numpy(),
+            "frac_expressed_grp": frac_expressed[g][idx].cpu().numpy(),
         }
         cv = (s_tk / x_tk).cpu().numpy()
         cols["cv_ref"], cols["cv_grp"] = cv[:, 0], cv[:, 1]
@@ -334,13 +342,13 @@ def vs_reference(
                 cols["log2_mean_ratio"] = np.log2(cols["mean_grp"] / cols["mean_ref"])
                 cols["mean_ratio_transform"] = st.transform
             else:
-                mr = (mst.mean[g][idx] / mst.mean[ref_i][idx]).cpu().numpy()
+                mr = (ratio_mean[g][idx] / ratio_mean[ref_i][idx]).cpu().numpy()
                 cols["log2_mean_ratio"] = np.log2(mr)
                 cols["mean_ratio_transform"] = mst.transform
 
         status = None
         if "sd_ratio" in tests:
-            k4 = torch.stack([st.kurtosis[ref_i][idx], st.kurtosis[g][idx]], dim=-1)
+            k4 = torch.stack([kurtosis[ref_i][idx], kurtosis[g][idx]], dim=-1)
             sr = sd_ratio_test_batch(
                 n=n_tk, sd=s_tk, kurtosis=k4,
                 kurtosis_shrinkage=kurtosis_shrinkage, kurtosis_prior_n=kurtosis_prior_n,
