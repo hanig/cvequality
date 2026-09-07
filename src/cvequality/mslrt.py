@@ -319,20 +319,21 @@ def mslr_test2_batch(
     nr : int
         Parametric bootstrap replicates per test. R's default is 1000.
     seed : int or None
-        Seeds a private generator, so a sharded run is reproducible and each shard is
-        independent of the others' scheduling.
+        An integer seeds a private generator, so a sharded run is reproducible and each
+        shard is independent of the others' scheduling. ``None`` uses PyTorch's global RNG.
     solver : {"newton", "fixedpoint"}
         Passed to the MLE for both the observed statistic and every bootstrap replicate.
     chunk : int, optional
         Tests per bootstrap step. Defaults to a memory-aware size derived from free device
-        memory; the bootstrap materializes ``(chunk, nr, k)`` buffers. Each chunk draws from
-        a generator seeded by ``(seed, start position in the compacted batch of OK tests)``.
-        Changing which neighbouring rows are degenerate can therefore shift an OK row's
-        compacted position and change its result by Monte Carlo error. The same inputs with
-        the same ``seed`` and ``chunk`` reproduce bit for bit. Different ``chunk`` values
-        consume the RNG differently and therefore agree only up to Monte Carlo error -- pass
-        ``chunk`` explicitly if you need results that do not depend on how much memory
-        happened to be free.
+        memory; the bootstrap materializes ``(chunk, nr, k)`` buffers. With independent
+        draws, each chunk draws from a generator seeded by ``(seed, start position in the
+        compacted batch of OK tests)``. Changing which neighbouring rows are degenerate can
+        therefore shift an OK row's compacted position and change its result by Monte Carlo
+        error. The same inputs with the same ``seed`` and ``chunk`` reproduce bit for bit.
+        Different ``chunk`` values consume independent draws differently and therefore agree
+        only up to Monte Carlo error -- pass ``chunk`` explicitly if you need independent-draw
+        results that do not depend on how much memory happened to be free. Shared-draw results
+        are independent of chunk boundaries.
     share_draws : bool
         Reuse one ``(nr, k)`` set of draws across every test in the batch (common random
         numbers). Requires all tests to share the same ``n``. Each test's bootstrap sample
@@ -386,7 +387,7 @@ def mslr_test2_batch(
     else:
         status = torch.where(ok & ~torch.isfinite(fit0.stat), i8(Status.NON_FINITE), status)
 
-    if share_draws:
+    if share_draws and T:
         spread = (n_t - n_t[:1]).abs().max()
         if bool(spread > 0):
             raise ValueError("share_draws=True requires every test in the batch to share the same n")
@@ -398,7 +399,7 @@ def mslr_test2_batch(
     u0 = fit0.u[ok_idx]
     sh0 = fit0.tauh[ok_idx].unsqueeze(-1) * u0
     se0 = sh0 / torch.sqrt(n_ok)
-    if share_draws:
+    if share_draws and ok_idx.numel():
         shared_df = (n_ok[:1] - 1.0).unsqueeze(1)
 
     nan = torch.tensor(float("nan"), device=device, dtype=dtype)
@@ -408,17 +409,23 @@ def mslr_test2_batch(
 
     T_ok = ok_idx.numel()
     step = pick_chunk(T_ok, nr, k, device=device, dtype=dtype, requested=chunk) if T_ok else 1
+    if share_draws and T_ok:
+        # Common random numbers are call-wide, not chunk-local. Keeping the bases at
+        # (1, nr, k) and expanding them as views preserves bounded chunk memory.
+        gen = make_generator(None if seed is None else seed * 1_000_003, device)
+        shared_z = standard_normal((1, nr, k), device=device, dtype=dtype, generator=gen)
+        shared_ch = chi2_rvs(shared_df, (1, nr, k), generator=gen)
     for start in range(0, T_ok, step):
         stop = min(start + step, T_ok)
         c = stop - start
         dfc = df[start:stop]
-        # Seed from the chunk's start in the compacted batch so a given `chunk` value is
-        # bit-reproducible regardless of iteration order or how many chunks came before.
-        gen = make_generator(None if seed is None else seed * 1_000_003 + start, device)
         if share_draws:
-            z = standard_normal((1, nr, k), device=device, dtype=dtype, generator=gen).expand(c, nr, k)
-            ch = chi2_rvs(shared_df, (1, nr, k), generator=gen).expand(c, nr, k)
+            z = shared_z.expand(c, nr, k)
+            ch = shared_ch.expand(c, nr, k)
         else:
+            # Seed from the chunk's start in the compacted batch so a given `chunk` value is
+            # bit-reproducible regardless of iteration order or preceding chunks.
+            gen = make_generator(None if seed is None else seed * 1_000_003 + start, device)
             z = standard_normal((c, nr, k), device=device, dtype=dtype, generator=gen)
             ch = chi2_rvs(dfc, (c, nr, k), generator=gen)
 
