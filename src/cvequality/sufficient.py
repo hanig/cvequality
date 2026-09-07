@@ -251,7 +251,12 @@ def _open_matrix(source, layer: Optional[str] = None):
 
         if hasattr(source, "obs") and hasattr(source, "var"):
             X = source.X if layer is None else source.layers[layer]
-            return None, ("anndata", X), tuple(source.shape), np.asarray(source.var_names), source
+            # A backed AnnData exposes a sliceable on-disk dataset rather than a numpy or
+            # scipy matrix.  Keep it distinct so _iter_row_blocks slices it before doing
+            # any conversion; np.asarray(backed_sparse_dataset) is a 0-dimensional object
+            # array, and loading it with ``to_memory`` would defeat streaming.
+            tag = "backed_anndata" if source.isbacked else "anndata"
+            return None, (tag, X), tuple(source.shape), np.asarray(source.var_names), source
     except ImportError:
         pass
     raise TypeError(f"unsupported source type {type(source)!r}")
@@ -374,6 +379,46 @@ def _iter_row_blocks(
         return
 
     import scipy.sparse as sp
+
+    if tag == "backed_anndata":
+        # Backed dense, CSR and CSC datasets all support bounded row slicing in AnnData.
+        # Choose rows conservatively from the dense upper bound: a batch then contains no
+        # more than target_nnz matrix entries (except for the unavoidable single-row case).
+        # This avoids relying on private on-disk indptr details and also works for layers.
+        per = max(1, int(target_nnz / max(shape[1], 1)))
+        if selected is not None and selected.mean() < GATHER_FRACTION:
+            wanted = np.flatnonzero(selected)
+            batches = (wanted[start : start + per] for start in range(0, len(wanted), per))
+        else:
+            batches = (
+                np.arange(start, min(start + per, n_cells))
+                for start in range(0, n_cells, per)
+            )
+
+        for cells in batches:
+            if cells.size == 0:
+                continue
+            # A slice is preferable for contiguous rows: h5py handles it efficiently, and
+            # AnnData's backed sparse datasets return the same scipy sparse block either way.
+            row_index = (
+                slice(int(cells[0]), int(cells[-1]) + 1)
+                if cells.size == int(cells[-1]) - int(cells[0]) + 1
+                else cells
+            )
+            blk = obj[row_index]
+            if sp.issparse(blk):
+                blk = blk.tocsr()
+                yield cells, blk.indices, blk.data, np.diff(blk.indptr)
+            else:
+                dense = np.asarray(blk)
+                rows, cols = np.nonzero(dense)
+                yield (
+                    cells,
+                    cols.astype(np.int64, copy=False),
+                    dense[rows, cols],
+                    np.bincount(rows, minlength=len(cells)),
+                )
+        return
 
     X = obj
     if sp.issparse(X):
