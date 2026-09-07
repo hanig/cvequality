@@ -32,7 +32,9 @@ def test_vs_reference_materializes_derived_tables_once(monkeypatch, toy_adata):
     )
 
     assert result["perturbation"].nunique() == 3
-    by_property = Counter(name for name, _object_id in counts)
+    by_property = Counter()
+    for (name, _object_id), count in counts.items():
+        by_property[name] += count
     assert by_property == Counter({
         "mean": 2,  # CV stats plus the separate ratio-scale mean_stats
         "sd": 1,
