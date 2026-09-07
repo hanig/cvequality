@@ -312,28 +312,45 @@ def solve_common_cv(*, n, x, s, tol: float = 1e-13, max_iter: int = 60) -> Commo
     N = float(np.sum(n))
     t = float(np.sum(n * vsq / x**2) / N)  # R's starting value
 
-    def u_of(t_):
-        return (-x + np.sqrt(x**2 + 4.0 * t_ * (vsq + x**2))) / 2.0 / t_
+    a = vsq + x**2
+
+    def terms(t_):
+        root = np.sqrt(x**2 + 4.0 * t_ * a)
+        # Unlike the literal R oracle above, this properly-converged oracle uses the
+        # rationalized positive root and a centered residual so it remains useful at low CV.
+        u = 2.0 * a / (x + root)
+        centered = 2.0 * x * t_ / (root + x) - vsq / a
+        derivative = x / root
+        return u, centered, derivative
 
     converged = False
     it = 0
     for it in range(1, max_iter + 1):
-        u = u_of(t)
-        F = float(np.sum(n * x / u)) - N
-        Fp = float(np.sum(n * x / (2.0 * t * u + x)))
-        t_new = t - F / Fp
-        if not (t_new > 0.0):  # F is monotone, so retreat toward 0 is always safe
+        _, centered, derivative = terms(t)
+        residual_signed = float(np.sum(n * centered) / N)
+        derivative_scaled = float(np.sum(n * derivative) / N)
+        delta = residual_signed / derivative_scaled
+        t_new = t - delta
+        if not (t_new > 0.0 and np.isfinite(t_new)):
             t_new = t / 2.0
-        step_ok = abs(t_new - t) <= tol * max(t, 1.0)
+        step_ok = abs(delta) <= tol * abs(t)
         t = t_new
-        if step_ok:
+        if step_ok and abs(residual_signed) <= 1e-12:
             converged = True
             break
 
-    u = u_of(t)
+    u, centered, derivative = terms(t)
     tauh = float(np.sqrt(t))
     stat = float(2.0 * np.sum(n * np.log(tauh * u / np.sqrt(vsq))))
-    residual = float(abs(np.sum(n * x / u) / N - 1.0))
+    residual_signed = float(np.sum(n * centered) / N)
+    correction = abs(residual_signed / float(np.sum(n * derivative) / N))
+    residual = abs(residual_signed)
+    converged = bool(
+        np.isfinite(residual)
+        and np.isfinite(correction)
+        and residual <= 1e-12
+        and correction <= tol * abs(t)
+    )
     return CommonCvFit(
         u=u, tauh=tauh, t=t, stat=stat, n_iter=it, converged=converged, residual=residual
     )
